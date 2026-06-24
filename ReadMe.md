@@ -39,8 +39,10 @@ This software is for experimental purposes only and is not meant for any illegal
 - Added: [Polk MagnifiMini Remote v1.0 (By varunyellina)](https://github.com/varunyellina/flipper-ir-remote-polkmagnifi)
 - Added: [Daikin64 AC Remote v0.1 (By mrcalifornium)](https://github.com/mrcalifornium/flipperzero-daikin64-ac-remote)
 - ESP Flasher: [Bump Marauder v1.12.3 (By justcallmekoko)](https://github.com/justcallmekoko/ESP32Marauder/releases/tag/v1.12.3)
-- Updated: [Tesla Mod v2.16.9 (By hypery11)](https://github.com/hypery11/flipper-tesla-fsd)
 - Updated: [Access Audit v1.11.1 (By matthewkayne)](https://github.com/matthewkayne/flipper-access-audit)
+- Updated: [Tesla Mod v2.16.9 (By hypery11)](https://github.com/hypery11/flipper-tesla-fsd)
+- Updated: [APRS TX v1.3.20 (By yo3gnd)](https://github.com/yo3gnd/flipper-zero-aprs-tx)
+- Added: [Badge Audit v1.0 (By ViperDroid)](https://github.com/ViperDroid/flipper-badge-audit)
 
 <a name="release"></a>
 
@@ -442,7 +444,7 @@ $ ./fbt dolphin_ext
 - [Anim Previewer v1.0 (By H4W9)](https://github.com/H4W9/AnimationPreviewerFlipperApp)
 - [Animation Switcher v1.1 (By lsalik2)](https://github.com/lsalik2/FlipperAnimationSwitcher)
 - [Answer Book v0.1 (By redbson)](https://github.com/redbson/The-Book-of-Answers)
-- [APRS TX v1.3.18 (By yo3gnd)](https://github.com/yo3gnd/flipper-zero-aprs-tx)
+- [APRS TX v1.3.20 (By yo3gnd)](https://github.com/yo3gnd/flipper-zero-aprs-tx)
 - [ASCII Table v1.0 (By x10102)](https://github.com/x10102/flipper_ascii)
 - [Atari SIO Emulator v0.5 (By cepetr)](https://github.com/cepetr/sio2flip)
 - [ATM Player v1.0.8 (By apfxtech)](https://github.com/apfxtech/FlipperATM)
@@ -452,6 +454,7 @@ $ ./fbt dolphin_ext
 - [AZERTY Mouse Jacker v1.2 (By mothball187)](https://github.com/mothball187/flipperzero-nrf24/tree/main/mousejacker) `Req: NRF24` (Uses AZERTY keyboard - Source Unknown)
 - [Bad Duck3 v1.1 (By dutchpatriot)](https://github.com/dutchpatriot/all-the-plugins/tree/833335354aa46fe605b494c1b3bf11afb5b362f9/non_catalog_apps/bad_duck3)
 - [Bad KB (Modified PR#738 from pengu1ndev - Original from WillyJL) #739 (By ESurge)](https://github.com/RogueMaster/flipperzero-firmware-wPlugins/pull/739) (Part of BadUSB)
+- [Badge Audit v1.0 (By ViperDroid)](https://github.com/ViperDroid/flipper-badge-audit)
 - [BadUSB Pro v1.0 (By barkandbite)](https://github.com/barkandbite/flipper_suite)
 - [Barcode App v1.4 (By Kingal1337)](https://github.com/Kingal1337/flipper-barcode-generator)
 - [BarCode Scanner Emulator (By polarikus)](https://github.com/polarikus/flipper-zero_bc_scanner_emulator) `Uses: COM-port`
