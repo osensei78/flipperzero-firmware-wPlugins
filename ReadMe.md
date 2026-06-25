@@ -26,10 +26,10 @@ This software is for experimental purposes only and is not meant for any illegal
 
 <a name="latest"></a> 
 
-## Latest Updates - [PATREON: Latest Release RM0622-1646-0.420.0-e231151](https://www.patreon.com/RogueMaster?filters[tag]=Latest%20Release)
+## Latest Updates - [PATREON: Latest Release RM0624-2328-0.420.0-068129d](https://www.patreon.com/RogueMaster?filters[tag]=Latest%20Release)
 
-- Last Synced/Checked OFW, changes in [commits](https://github.com/flipperdevices/flipperzero-firmware/commits/dev): `2026-06-22 16:46 EST`
-- Last Synced/Checked Unleashed, changes in [changelog](https://github.com/RogueMaster/flipperzero-firmware-wPlugins/blob/420/CHANGELOG.md): `2026-06-22 16:46 EST`
+- Last Synced/Checked OFW, changes in [commits](https://github.com/flipperdevices/flipperzero-firmware/commits/dev): `2026-06-24 23:28 EST`
+- Last Synced/Checked Unleashed, changes in [changelog](https://github.com/RogueMaster/flipperzero-firmware-wPlugins/blob/420/CHANGELOG.md): `2026-06-24 23:28 EST`
 - Updated: [Flipcraft v2.2 (By apfxtech)](https://github.com/apfxtech/Flipcraft)
 - Added: [KeeLoq Keystore Decryptor v1.0 (By Lechnio)](https://github.com/Lechnio/KeeLoq-Keystore-Decryptor)
 - Updated: [Passy v1.5 (By bettse)](https://github.com/bettse/passy)
@@ -39,10 +39,13 @@ This software is for experimental purposes only and is not meant for any illegal
 - Added: [Polk MagnifiMini Remote v1.0 (By varunyellina)](https://github.com/varunyellina/flipper-ir-remote-polkmagnifi)
 - Added: [Daikin64 AC Remote v0.1 (By mrcalifornium)](https://github.com/mrcalifornium/flipperzero-daikin64-ac-remote)
 - ESP Flasher: [Bump Marauder v1.12.3 (By justcallmekoko)](https://github.com/justcallmekoko/ESP32Marauder/releases/tag/v1.12.3)
-- Updated: [Access Audit v1.11.1 (By matthewkayne)](https://github.com/matthewkayne/flipper-access-audit)
-- Updated: [Tesla Mod v2.16.9 (By hypery11)](https://github.com/hypery11/flipper-tesla-fsd)
 - Updated: [APRS TX v1.3.20 (By yo3gnd)](https://github.com/yo3gnd/flipper-zero-aprs-tx)
 - Added: [Badge Audit v1.0 (By ViperDroid)](https://github.com/ViperDroid/flipper-badge-audit)
+- Updated: [Ghost ESP v1.8.0 (By jaylikesbunda & Spooks4576)](https://github.com/Spooks4576/ghost_esp_app) `Req: ESP32` with [Ghost ESP Firmware](https://github.com/Spooks4576/Ghost_ESP)
+- Updated: [Tesla Mod v2.16.10 (By hypery11)](https://github.com/hypery11/flipper-tesla-fsd)
+- Updated: [ProtoPirate v3.0.2 (By RocketGod-git)](https://protopirate.net/ProtoPirate/ProtoPirate)
+- Updated: [Access Audit v1.11.2 (By matthewkayne)](https://github.com/matthewkayne/flipper-access-audit)
+- Added: [NFC QR Presenter v1.0 (By RogerF5-Security)](https://github.com/RogerF5-Security/NFC_QR_Presenter)
 
 <a name="release"></a>
 
@@ -431,7 +434,7 @@ $ ./fbt dolphin_ext
 ## Apps / Plugins
 
 - [24Cxx Programmer v2.0 (By kamylwnb)](https://github.com/kamylwnb/24cxxprog)
-- [Access Audit v1.11.1 (By matthewkayne)](https://github.com/matthewkayne/flipper-access-audit)
+- [Access Audit v1.11.2 (By matthewkayne)](https://github.com/matthewkayne/flipper-access-audit)
 - [Agentic Remote USB/BT v0.28 (By Wet-wr-Labs)](https://github.com/Wet-wr-Labs/claupper)
 - [Air Level v1.0 (By jamisonderek)](https://github.com/jamisonderek/flipper-zero-tutorials/tree/main/vgm/air_level) `Req: Video Game Module By Flipper Devices`
 - [Air Stats v1.0 (By thevan4)](https://github.com/thevan4/flipper-air-stats) Req: [See App Readme For Supported Modules](https://github.com/RogueMaster/flipperzero-firmware-wPlugins/blob/420/applications/external/air_stats/README.md)
@@ -619,7 +622,7 @@ $ ./fbt dolphin_ext
 - [GB Printer v0.5 (By kbembedded)](https://github.com/kbembedded/flipper-gb-printer) `Req: GB Link Cable / Malveke`
 - [Gemini IA v1.1 (By d4rks1d33 & jamisonderek)](https://github.com/d4rks1d33/Gemini-Flipper)
 - [Genie Recorder v3.1 (By jamisonderek)](https://github.com/jamisonderek/flipper-zero-tutorials/tree/main/subghz/apps/genie-recorder)
-- [Ghost ESP v1.7.0 (By jaylikesbunda & Spooks4576)](https://github.com/Spooks4576/ghost_esp_app) `Req: ESP32` with [Ghost ESP Firmware](https://github.com/Spooks4576/Ghost_ESP)
+- [Ghost ESP v1.8.0 (By jaylikesbunda & Spooks4576)](https://github.com/Spooks4576/ghost_esp_app) `Req: ESP32` with [Ghost ESP Firmware](https://github.com/Spooks4576/Ghost_ESP)
 - [GhostBook v0.6 (By digitard)](https://github.com/digitard/ghostbook)
 - [GnomishTool v1.0 (By Andreeved88)](https://github.com/Andreeved88/GnomishTool)
 - [Govee Control v0.1 (By devdotbo)](https://github.com/devdotbo/GlowFin)
@@ -761,6 +764,7 @@ $ ./fbt dolphin_ext
 - [NFC Magic v1.15.2 (By gornekich)](https://github.com/flipperdevices/flipperzero-firmware/pull/1966)
 - [NFC Maker v2.1 (by WillyJL)](https://github.com/RogueMaster/flipperzero-firmware-wPlugins/commit/343cb39d08f60b75b537e1a31100707935cf6e9d)
 - [NFC Playlist v3.5 (By acegoal07)](https://github.com/acegoal07/FlipperZero_NFC_Playlist/tree/main)
+- [NFC QR Presenter v1.0 (By RogerF5-Security)](https://github.com/RogerF5-Security/NFC_QR_Presenter)
 - [NFC Relay v0.2 (By leommxj)](https://github.com/leommxj/nfc_relay)
 - [NFC Seader v4.1.1 (By bettse)](https://github.com/bettse/seader)
 - [NFC Sniffer v0.2 (By kdiller713)](https://github.com/kdiller713/public-FlipperApps/tree/main/nfc_sniffer)
@@ -890,7 +894,7 @@ $ ./fbt dolphin_ext
 - [TagTinker v2.1 (By i12bp8)](https://github.com/i12bp8/TagTinker)
 - [Tasks v1.2 (By MadLadSquad)](https://github.com/MadLadSquad/FlipperTasks)
 - [Temp Sensors Reader 2.1 (By quen0n)](https://github.com/quen0n/Unitemp-Flipper-Zero-Plugin) Req: [See App Readme For Supported Modules](https://github.com/RogueMaster/flipperzero-firmware-wPlugins/blob/420/applications/external/unitemp/README.md)
-- [Tesla Mod v2.16.9 (By hypery11)](https://github.com/hypery11/flipper-tesla-fsd)
+- [Tesla Mod v2.16.10 (By hypery11)](https://github.com/hypery11/flipper-tesla-fsd)
 - [Text To SAM v1.4 (By RoundPi)](https://github.com/Round-Pi/flipperzero-text2sam)
 - [Text Viewer v1.6 (By WillyJL)](https://github.com/RogueMaster/flipperzero-firmware-wPlugins/commit/ae4fc4a54febccb44b010c4025a99c2edef9a7f0)
 - [The C Prog. Language v0.2 (By armixz)](https://github.com/armixz/Flipper-Zero-The-C-Programming-Language)
