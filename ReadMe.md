@@ -26,10 +26,10 @@ This software is for experimental purposes only and is not meant for any illegal
 
 <a name="latest"></a> 
 
-## Latest Updates - [PATREON: Latest Release RM0705-0116-d38efda8-Patreon](https://www.patreon.com/RogueMaster?filters[tag]=Latest%20Release)
+## Latest Updates - [PATREON: Latest Release RM0705-1435-a9175bb5-Patreon](https://www.patreon.com/RogueMaster?filters[tag]=Latest%20Release)
 
-- Last Synced/Checked OFW, changes in [commits](https://github.com/flipperdevices/flipperzero-firmware/commits/dev): `2026-07-05 01:16 EST`
-- Last Synced/Checked CFW, changes in [changelog](https://github.com/RogueMaster/flipperzero-firmware-wPlugins/blob/420/CHANGELOG.md): `2026-07-05 01:16 EST`
+- Last Synced/Checked OFW, changes in [commits](https://github.com/flipperdevices/flipperzero-firmware/commits/dev): `2026-07-05 14:35 EST`
+- Last Synced/Checked CFW, changes in [changelog](https://github.com/RogueMaster/flipperzero-firmware-wPlugins/blob/420/CHANGELOG.md): `2026-07-05 14:35 EST`
 - Updated: NFC: [FeliCa: Add Standard card emulation support #4383 (By nikachu2012)](https://github.com/flipperdevices/flipperzero-firmware/pull/4383)
 - Updated: [Morse Flipper v0.1.70 (By yo3gnd)](https://github.com/yo3gnd/morse-flipper)
 - NFC: [Read MIFARE Plus 2K in SL1 as full 32 sectors / 64 keys - a Plus 2K in SL1 is byte-identical to a Classic 1K in SAK/ATQA and was mis-sized as 1K; it is now told apart by its ISO14443-4 ATS (Plus S/X signature), while Plus SE, SmartMX, magic Perfect CUID and plain 1K stay 1K (By mishamyte)](https://github.com/DarkFlippers/unleashed-firmware/pull/1016)
@@ -39,12 +39,20 @@ This software is for experimental purposes only and is not meant for any illegal
 - Updated: [NFC Comparator v2.6 (By acegoal07)](https://github.com/acegoal07/FlipperZero_NFC_Comparator)
 - Fixed SubGHz Settings Load For: [Chief Cooker v1.1 (By denr01)](https://github.com/denr01/FZ-ChiefCooker), [Cross Remote v3.3 (By leedave)](https://github.com/leedave/flipper-zero-cross-remote), [Frequency Analyzer (External) v1.0 (By xMasterX)](https://github.com/xMasterX/all-the-plugins/tree/dev/non_catalog_apps/freq_analyzer_ext), [Restaurant Pager Trigger v1.7 (By leedave)](https://github.com/leedave/flipper-zero-meal-pager), [Sub Analyzer v1.0 (By RocketGod)](https://github.com/RocketGod-git/Flipper-Zero-SUB-Analyzer), [Sub-Ghz Toolkit 1808 v1.0 (By RocketGod-git)](https://github.com/RocketGod-git/RocketGods-SubGHz-Toolkit) & [TPMS Reader v1.0 (By wosk)](https://github.com/wosk/flipperzero-tpms)
 - Updated: [ProtoPirate v3.2 (By RocketGod-git)](https://protopirate.net/ProtoPirate/ProtoPirate) (Fixed Emulate/Decode Issues Hopefully and SubGHz Settings Load) [Fixes for VAG (By zero-mega)](https://github.com/RocketGod-git/ProtoPirate/commit/a5463f56e00eefce87033e88424c48a68c86662b)
-- Updated: [Flipcraft v4.1 (By apfxtech)](https://github.com/apfxtech/Flipcraft)
 - RFID: [Read T5577 tags holding multiple EM4100 IDs again - a T5577 written with several EM4100 IDs (e.g. via Multiwriter) hung on Read since the Electra protocol was added; also resets a stale PAC/Stanley decoder buffer (By mishamyte)](https://github.com/DarkFlippers/unleashed-firmware/pull/1025)
 - Added: [Walkman v1.0 (By rynosec)](https://github.com/rynosec/flipper-walkman) `Req:  GD3300D / HW-311 / YX5300-family board`
 - CCID: [Add interrupt support #4198 (By kidbomb)](https://github.com/flipperdevices/flipperzero-firmware/pull/4198)
 - NFC: [Parser to identify some hotel systems #4323 (By bettse)](https://github.com/flipperdevices/flipperzero-firmware/pull/4323) (Already in RM)
 - Updated: [Flipper Share v1.4 (By lomalkin)](https://github.com/lomalkin/flipper-zero-apps/tree/dev/flipper_share)
+- Added: [GameBoy Emu v1.0 (By D4C1-Labs & jgilchrist)](https://github.com/D4C1-Labs/Flipper-ARF/tree/0d598b854c868067bf39111ae14bc8c2e195c26c/applications/system/FlipperGB) (No Promises For Performance on Flipper)
+- Updated: [Flipcraft v4.2 (By apfxtech)](https://github.com/apfxtech/Flipcraft)
+- Added: [Xiaomi Filter Reset v1.0 (By khmm12)](https://github.com/khmm12/flipper-xiaomi-filter-reset)
+- NFC: [Fix memory leaks & double-frees in the NFC app - heap-corrupting double-frees in the Plantain and SZPPK/SEVPPK/SK transit parsers (crash on two-trip tickets), leaks in the Saflok parser, the app API resolver (per launch) and the CUID-dictionary error path, plus a ~15x RAM over-allocation of the MIFARE DESFire file-data array (By mishamyte)](https://github.com/DarkFlippers/unleashed-firmware/pull/1030)
+- Updated: [Daikin64 AC Remote v0.1 (By mrcalifornium)](https://github.com/mrcalifornium/flipperzero-daikin64-ac-remote)
+- Updated: [GameBoy Emu v1.0 (By D4C1-Labs & jgilchrist)](https://github.com/D4C1-Labs/Flipper-ARF/tree/0d598b854c868067bf39111ae14bc8c2e195c26c/applications/system/FlipperGB)
+- Updated: [Dab Timer v2.2 (By RogueMaster)](https://github.com/RogueMaster/flipperzero-dabtimer)
+- Updated: [24Cxx Programmer v2.1 (By kamylwnb)](https://github.com/kamylwnb/24cxxprog)
+- Updated Lock Screen Image + SD Card Assets Updated With New Pack Info (By RogueMaster)
 
 <a name="release"></a>
 
@@ -201,7 +209,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - [Five Nights at Flippers v1.3 (By sillygir1)](https://github.com/sillygir1/flipperzero-fnaf)
 - [Flappy Bird v1.5 (By DroomOne)](https://github.com/DroomOne/flipperzero-firmware/tree/dev/applications/flappy_bird)
 - [Flight Assault v0.4 (By evillero)](https://github.com/evillero/flight_assault)
-- [Flipcraft v4.1 (By apfxtech)](https://github.com/apfxtech/Flipcraft)
+- [Flipcraft v4.2 (By apfxtech)](https://github.com/apfxtech/Flipcraft)
 - [Flipper Hero v1.4 (By mentoster)](https://github.com/mentoster/Flipper-hero)
 - [Flippy Road v1.1 (By rkilpadi)](https://github.com/rkilpadi/flippy-road)
 - [FlipRogue v1.2.1 (By Abzac)](https://github.com/Abzac/fliprogue)
@@ -210,6 +218,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - [Free Roam v0.6 (By jblanked)](https://github.com/jblanked/Free-Roam) `Req: ESP32` with [FliperHTTP Firmware](https://github.com/jblanked/FlipperHTTP)
 - [Furious Birds v1.1 (By bmstr-ru)](https://github.com/bmstr-ru/furious-birds)
 - [Game of Life v1.3 (By Mad-MO)](https://github.com/Mad-MO/FlipperGoL)
+- [GameBoy Emu v1.0 (By D4C1-Labs & jgilchrist)](https://github.com/D4C1-Labs/Flipper-ARF/tree/0d598b854c868067bf39111ae14bc8c2e195c26c/applications/system/FlipperGB)
 - [Geometry Dash v0.1 (By goosedev72-projects)](https://github.com/goosedev72-projects/flipperzero-geometryflip)
 - [Ghouls v0.6 (By jblanked)](https://github.com/jblanked/Ghouls-Flipper) `Req: ESP32` with [FliperHTTP Firmware](https://github.com/jblanked/FlipperHTTP)
 - [Groks Adventure v0.15 (By DigiMancer3D)](https://github.com/DigiMancer3D/Groks_Adventure)
@@ -312,7 +321,7 @@ This software is for experimental purposes only and is not meant for any illegal
 
 ## Apps / Plugins
 
-- [24Cxx Programmer v2.0 (By kamylwnb)](https://github.com/kamylwnb/24cxxprog)
+- [24Cxx Programmer v2.1 (By kamylwnb)](https://github.com/kamylwnb/24cxxprog)
 - [Access Audit v1.13 (By matthewkayne)](https://github.com/matthewkayne/flipper-access-audit)
 - [Agentic Remote USB/BT v0.28 (By Wet-wr-Labs)](https://github.com/Wet-wr-Labs/claupper)
 - [Air Level v1.0 (By jamisonderek)](https://github.com/jamisonderek/flipper-zero-tutorials/tree/main/vgm/air_level) `Req: Video Game Module By Flipper Devices`
@@ -396,7 +405,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - [Cross Remote v3.3 (By leedave)](https://github.com/leedave/flipper-zero-cross-remote)
 - [Crypto Dictionary v0.1 (By armixz)](https://github.com/armixz/Flipper-Zero-Crypto-Dictionary)
 - [Cyborg Detector v1.1 (By RocketGod-Git)](https://github.com/RocketGod-Git/Flipper-Zero-Cyborg-Detector)
-- [Dab Timer v2.1 (By RogueMaster)](https://github.com/RogueMaster/flipperzero-dabtimer)
+- [Dab Timer v2.2 (By RogueMaster)](https://github.com/RogueMaster/flipperzero-dabtimer)
 - [Daikin64 AC Remote v0.1 (By mrcalifornium)](https://github.com/mrcalifornium/flipperzero-daikin64-ac-remote)
 - [Dallas Tester v0.1 (By mishamyte)](https://github.com/mishamyte/flipper-dallas-tester)
 - [DAP Link v1.3 (By DrZlo13)-OFW](https://github.com/flipperdevices/flipperzero-firmware/pull/1897)
@@ -613,7 +622,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - [MODBUS v1.1.3.1 (By ElectronicCats)](https://github.com/ElectronicCats/flipper-rs485modbus) `Req: Modbus By ElectronicCats`
 - [Moisture Sensor v1.0 (By smallwat3r)](https://github.com/smallwat3r/flipperzero-moisture-sensor)
 - [Moon Phases v1.0 (By w84death)](https://github.com/w84death/flipper-zero-apps)
-- [Morse Code v1.3 (By wh00hw)](https://github.com/DarkFlippers/unleashed-firmware/pull/144)
+- [Morse Code v1.3 (By wh00hw)](https://github.com/wh00hw/MorseCodeFAP)
 - [Morse Flipper v0.1.70 (By yo3gnd)](https://github.com/yo3gnd/morse-flipper)
 - [Mouse Jacker v1.2 (By mothball187)](https://github.com/mothball187/flipperzero-nrf24/tree/main/mousejacker) [Pin Out from nocomp/Frog/UberGuidoZ](https://github.com/RogueMaster/flipperzero-firmware-wPlugins/tree/420/applications/mousejacker) `Req: NRF24`
 - [Mouse Jacker for MS Mouse v1.2 (Remixed By coded-with-claws)](https://github.com/coded-with-claws/flipperzero-tools/tree/main/applications_user/mousejacker_ms) `Req: NRF24`
@@ -836,6 +845,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - [wM-Buster v1.1.1 (By i12bp8)](https://github.com/i12bp8/wmbuster)
 - [WS2812B LED Tester v1.9 (By jamisonderek)](https://github.com/jamisonderek/flipper-zero-tutorials/tree/main/gpio/ws2812b_tester)
 - [XBox360 USB Game Controller v0.2 (By expected-ingot)](https://github.com/expected-ingot/flipper-xinput)
+- [Xiaomi Filter Reset v1.0 (By khmm12)](https://github.com/khmm12/flipper-xiaomi-filter-reset)
 - [XRemote v1.4 (By kala13x)](https://github.com/kala13x/flipper-xremote)
 - [YuriCable Pro Max v0.4 (By arag0re)](https://github.com/arag0re/fz-yuricable-pro-max)
 - [ZeroFIDO v0.7 (By MinorGlitch)](https://github.com/MinorGlitch/zerofido)
