@@ -59,6 +59,16 @@ static const uint8_t morse_help_slash_xbm[] = {
     0x01,
 };
 
+static const uint8_t morse_help_ground_xbm[] = {
+    0x08,
+    0x08,
+    0x7f,
+    0x00,
+    0x3e,
+    0x00,
+    0x1c,
+};
+
 static const CwmdIcon morse_help_icons[] = {
     {
         .id = 1U,
@@ -113,6 +123,15 @@ static const CwmdIcon morse_help_icons[] = {
         .left_bearing = 1U,
         .right_bearing = 0U,
         .xbm = morse_help_slash_xbm,
+    },
+    {
+        .id = 7U,
+        .width = 7U,
+        .height = 7U,
+        .y_offset = 0,
+        .left_bearing = 0U,
+        .right_bearing = 0U,
+        .xbm = morse_help_ground_xbm,
     },
 };
 
@@ -224,6 +243,7 @@ static bool morse_flipper_help_read_asset(FuriString* out, const char* path) {
         uint64_t sz = storage_file_size(file);
         if(sz > 0U && sz <= MORSE_FLIPPER_HELP_ASSET_MAX_BYTES) {
             char buf[96];
+            size_t total = 0U;
             size_t got;
 
             furi_string_reserve(out, (size_t)sz + 1U);
@@ -232,9 +252,10 @@ static bool morse_flipper_help_read_asset(FuriString* out, const char* path) {
                 if(got > 0U) {
                     buf[got] = '\0';
                     furi_string_cat_str(out, buf);
+                    total += got;
                 }
-            } while(got == sizeof(buf) - 1U);
-            ok = !furi_string_empty(out);
+            } while(got > 0U && total < (size_t)sz);
+            ok = total == (size_t)sz && !furi_string_empty(out);
         }
     }
 
@@ -288,6 +309,7 @@ static const char* morse_flipper_help_current_text(const MorseFlipperApp* app) {
 
 void morse_flipper_help_open(MorseFlipperApp* app) {
     if(app == NULL) return;
+    if(app->help_text == NULL) app->help_text = furi_string_alloc();
     morse_flipper_help_load_card(app);
     view_dispatcher_switch_to_view(app->view_dispatcher, MorseFlipperViewLive);
     morse_flipper_view_dirty(app);
