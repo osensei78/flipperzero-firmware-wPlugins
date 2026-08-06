@@ -7,6 +7,9 @@
 
 #include <power/power_service/power.h>
 
+#include <furi/core/memmgr.h>
+#include <furi/core/memmgr_heap.h>
+
 #define TAG "SubGhzTxRx"
 
 static void subghz_txrx_radio_device_power_on(SubGhzTxRx* instance) {
@@ -40,6 +43,7 @@ SubGhzTxRx* subghz_txrx_alloc(void) {
 
     instance->worker = subghz_worker_alloc();
     instance->fff_data = flipper_format_string_alloc();
+    instance->tx_from_internal_fff = false;
 
     instance->environment = subghz_environment_alloc();
     instance->is_database_loaded =
@@ -311,6 +315,11 @@ SubGhzTxRxStartTxState subghz_txrx_tx_start(SubGhzTxRx* instance, FlipperFormat*
 
     subghz_txrx_stop(instance);
 
+    //Only a transmission of our own fff_data corresponds to subghz->file_path
+    //and may be saved back after TX. History/RX signals (passed as a separate
+    //flipper_format) must never trigger the save-back
+    instance->tx_from_internal_fff = (flipper_format == instance->fff_data);
+
     SubGhzTxRxStartTxState ret = SubGhzTxRxStartTxStateErrorParserOthers;
     FuriString* temp_str = furi_string_alloc();
     do {
@@ -322,6 +331,20 @@ SubGhzTxRxStartTxState subghz_txrx_tx_start(SubGhzTxRx* instance, FlipperFormat*
             FURI_LOG_E(TAG, "Missing Protocol");
             break;
         }
+
+        size_t need_heap = SUBGHZ_TX_MIN_HEAP;
+        size_t need_block = SUBGHZ_TX_MIN_BLOCK;
+        if(furi_string_equal(temp_str, "RAW")) {
+            need_heap = SUBGHZ_TX_MIN_HEAP_RAW;
+            need_block = SUBGHZ_TX_MIN_BLOCK_RAW;
+        }
+        instance->tx_min_heap_required = need_heap;
+        if(memmgr_get_free_heap() < need_heap || memmgr_heap_get_max_free_block() < need_block) {
+            FURI_LOG_E(TAG, "Not enough memory to start TX");
+            ret = SubGhzTxRxStartTxStateErrorMemory;
+            break;
+        }
+
         ret = SubGhzTxRxStartTxStateOk;
 
         SubGhzRadioPreset* preset = instance->preset;
@@ -402,7 +425,10 @@ static void subghz_txrx_tx_stop(SubGhzTxRx* instance) {
     subghz_transmitter_free(instance->transmitter);
 
     //if protocol dynamic then we save the last upload
-    if(instance->decoder_result->protocol->type == SubGhzProtocolTypeDynamic) {
+    //but only when we transmitted our own fff_data (bound to file_path)
+    //never for history/RX signals, which would overwrite an unrelated file
+    if(instance->tx_from_internal_fff &&
+       instance->decoder_result->protocol->type == SubGhzProtocolTypeDynamic) {
         if(instance->need_save_callback) {
             instance->need_save_callback(instance->need_save_context);
         }
@@ -414,6 +440,11 @@ static void subghz_txrx_tx_stop(SubGhzTxRx* instance) {
 FlipperFormat* subghz_txrx_get_fff_data(SubGhzTxRx* instance) {
     furi_assert(instance);
     return instance->fff_data;
+}
+
+size_t subghz_txrx_get_tx_min_heap_required(SubGhzTxRx* instance) {
+    furi_assert(instance);
+    return instance->tx_min_heap_required;
 }
 
 SubGhzSetting* subghz_txrx_get_setting(SubGhzTxRx* instance) {

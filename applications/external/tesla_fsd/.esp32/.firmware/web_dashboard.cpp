@@ -193,6 +193,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 .row{display:flex;justify-content:space-between;align-items:center;padding:9px 0}
 .row+.row{border-top:1px solid rgba(255,255,255,.04)}
 .lbl{color:var(--text2);font-size:.85em}
+.hint{display:block;color:var(--text2);opacity:.62;font-size:.82em;line-height:1.35;margin-top:2px;max-width:20em}
+details select{background:var(--card2);border:1px solid var(--border);color:var(--text);padding:4px 6px;border-radius:4px;font-size:.85em;flex:none}
 details input{background:var(--card2);border:1px solid var(--border);color:var(--text);padding:4px;border-radius:4px;text-align:right;width:60px}
 details input.cgn{width:38px;margin-left:4px}
 
@@ -421,6 +423,15 @@ input:checked+.sl2:before{transform:translateX(20px);background:#fff}
   <summary><span id="controlsSummary" class="control-summary">...</span></summary>
   <div class="controls-body">
   <div class="row">
+    <span class="lbl">Hardware<br><span class="hint">Auto-detect needs 0x398 &mdash; many Model 3/Y never send it. Pick your car if detection is wrong.</span></span>
+    <select id="selHwOverride" onchange="cmd('hw_override',parseInt(this.value,10))">
+      <option value="0">Auto-detect</option>
+      <option value="3">Force HW4</option>
+      <option value="2">Force HW3</option>
+      <option value="1">Force Legacy</option>
+    </select>
+  </div>
+  <div class="row">
     <span class="lbl">Ignore OTA</span>
     <label class="sw"><input type="checkbox" id="swIgnoreOta" onchange="cmd('ignore_ota',this.checked)"><span class="sl2"></span></label>
   </div>
@@ -439,6 +450,14 @@ input:checked+.sl2:before{transform:translateX(20px);background:#fff}
   <div class="row">
     <span class="lbl">AP-First (14.x)</span>
     <label class="sw"><input type="checkbox" id="swApFirst" onchange="cmd('ap_first',this.checked)"><span class="sl2"></span></label>
+  </div>
+  <div class="row">
+    <span class="lbl">Instant Engage (exp.)</span>
+    <label class="sw"><input type="checkbox" id="swApFe" onchange="cmd('ap_first_edge',this.checked)"><span class="sl2"></span></label>
+  </div>
+  <div class="row">
+    <span class="lbl">Minimal Inject (exp.)</span>
+    <label class="sw"><input type="checkbox" id="swApMi" onchange="cmd('ap_first_minimal',this.checked)"><span class="sl2"></span></label>
   </div>
   <div class="row">
     <span class="lbl">Nag EPAS-faithful (14.x, exp.)</span>
@@ -547,8 +566,8 @@ R"rawliteral(
   <div class="card-head"><div class="icon ic-d">R</div><h2>Black-box</h2>
     <span id="bbBadge" class="pill on" style="display:none;margin-left:auto">NEW</span></div>
   <div id="bbNote" class="log-info" style="margin-bottom:10px;display:none">
-    Records full-rate CAN around anomalies (aborts, bus-off, manual marks) to the
-    device only &mdash; never uploaded. Use the toggle below to enable or disable.
+    Records the key diagnostic CAN IDs around anomalies (aborts, bus-off, manual
+    marks) to the device only &mdash; never uploaded. Use the toggle below to enable or disable.
     <button type="button" onclick="bbDismiss()" style="margin-left:6px;background:var(--card2);border:1px solid var(--border);color:var(--text);padding:2px 8px;border-radius:4px;cursor:pointer">Got it</button>
   </div>
   <div class="row">
@@ -709,6 +728,7 @@ R"rawliteral( TTGO T-Display + MCP2515)rawliteral"
 R"rawliteral( M5Stack ATOM Lite + ATOMIC CAN Base)rawliteral"
 #endif
 R"rawliteral(</div>
+<div class="foot">Free &amp; open source &middot; <a href="https://fsd.fkey.id/" target="_blank" rel="noopener">support the research</a></div>
 </div><!-- /wrap -->
 
 <script>
@@ -916,10 +936,15 @@ function upd(d){
 
   // Switches sync
   if(document.getElementById('swIgnoreOta')) document.getElementById('swIgnoreOta').checked=d.ignore_ota;
+  // Manual HW selection (#110) — don't fight the user while the menu is open.
+  var hwSel=document.getElementById('selHwOverride');
+  if(hwSel && d.hw_override!==undefined && document.activeElement!==hwSel) hwSel.value=String(d.hw_override);
   if(document.getElementById('swFsdUnlock')) document.getElementById('swFsdUnlock').checked=d.fsd_unlock;
   if(document.getElementById('swNag')) document.getElementById('swNag').checked=d.nag_killer;
   if(document.getElementById('swContinuousAp')) document.getElementById('swContinuousAp').checked=d.continuous_ap;
   if(document.getElementById('swApFirst')) document.getElementById('swApFirst').checked=d.ap_first;
+  if(document.getElementById('swApFe')) document.getElementById('swApFe').checked=d.ap_first_edge;
+  if(document.getElementById('swApMi')) document.getElementById('swApMi').checked=d.ap_first_minimal;
   if(document.getElementById('swNagF')) document.getElementById('swNagF').checked=d.nag_faithful;
   if(document.getElementById('swSoft')) document.getElementById('swSoft').checked=d.soft_engage;
   if(document.getElementById('swNagB')) document.getElementById('swNagB').checked=d.nag_burst;
@@ -1485,6 +1510,7 @@ static String build_json() {
     j += "\"fsd_enabled\":";   j += state.fsd_enabled                 ? "true" : "false"; j += ',';
     j += "\"ap_active\":";     j += state.ap_active                   ? "true" : "false"; j += ',';
     j += "\"op_mode\":";       j += (int)state.op_mode;                j += ',';
+    j += "\"hw_override\":";   j += (int)state.hw_override;            j += ',';
     j += "\"hw_version\":";    j += (int)state.hw_version;             j += ',';
     j += "\"ota\":";           j += state.tesla_ota_in_progress        ? "true" : "false"; j += ',';
     j += "\"ap_das_profile\":\""; j += ap_das_profile;                 j += "\",";
@@ -1494,6 +1520,8 @@ static String build_json() {
     j += "\"nag_killer\":";    j += state.nag_killer                   ? "true" : "false"; j += ',';
     j += "\"continuous_ap\":"; j += state.continuous_ap                 ? "true" : "false"; j += ',';
     j += "\"ap_first\":";      j += state.ap_first                      ? "true" : "false"; j += ',';
+    j += "\"ap_first_edge\":"; j += state.ap_first_edge                 ? "true" : "false"; j += ',';
+    j += "\"ap_first_minimal\":"; j += state.ap_first_minimal           ? "true" : "false"; j += ',';
     j += "\"nag_faithful\":";  j += state.nag_epas_faithful             ? "true" : "false"; j += ',';
     j += "\"soft_engage\":";   j += state.soft_engage                  ? "true" : "false"; j += ',';
     j += "\"nag_burst\":";     j += state.nag_burst                    ? "true" : "false"; j += ',';
@@ -1612,6 +1640,29 @@ static void ws_event(uint8_t num, WStype_t type,
         http_can_stream_set_enabled(true);  // capture works in both modes now (#108)
         Serial.println(active ? "[Web] → Active mode" : "[Web] → Listen-Only mode");
         prefs_save(&saved);
+    } else if (strstr(buf, "\"hw_override\"")) {
+        // Manual HW selection (#110): 0 = auto-detect, else pin the version.
+        if (vptr) {
+            while (*vptr == ' ' || *vptr == ':') vptr++;
+            int sel = atoi(vptr);
+            if (sel >= (int)TeslaHW_Unknown && sel <= (int)TeslaHW_HW4) {
+                TeslaHWVersion want = (TeslaHWVersion)sel;
+                FSDState saved;
+                state_enter();
+                g_state->hw_override = want;
+                // Apply at once so the right handlers are live immediately; on
+                // "auto" leave the current detection in place and let the normal
+                // detectors take over again from the next frames.
+                if (want != TeslaHW_Unknown) fsd_apply_hw_version(g_state, want);
+                saved = *g_state;
+                state_exit();
+                Serial.printf("[Web] HW override: %s\n",
+                              (want == TeslaHW_HW4)    ? "HW4" :
+                              (want == TeslaHW_HW3)    ? "HW3" :
+                              (want == TeslaHW_Legacy) ? "Legacy" : "Auto");
+                prefs_save(&saved);
+            }
+        }
     } else if (strstr(buf, "\"ignore_ota\"")) {
         if (vptr) {
             while (*vptr == ' ' || *vptr == ':') vptr++;
@@ -1670,6 +1721,30 @@ static void ws_event(uint8_t num, WStype_t type,
             saved = *g_state;
             state_exit();
             Serial.printf("[Web] AP-First: %s\n", enabled ? "ON" : "OFF");
+            prefs_save(&saved);
+        }
+    } else if (strstr(buf, "\"ap_first_edge\"")) {
+        if (vptr) {
+            while (*vptr == ' ' || *vptr == ':') vptr++;
+            bool enabled = (strncmp(vptr, "true", 4) == 0);
+            FSDState saved;
+            state_enter();
+            g_state->ap_first_edge = enabled;
+            saved = *g_state;
+            state_exit();
+            Serial.printf("[Web] Instant Engage: %s\n", enabled ? "ON" : "OFF");
+            prefs_save(&saved);
+        }
+    } else if (strstr(buf, "\"ap_first_minimal\"")) {
+        if (vptr) {
+            while (*vptr == ' ' || *vptr == ':') vptr++;
+            bool enabled = (strncmp(vptr, "true", 4) == 0);
+            FSDState saved;
+            state_enter();
+            g_state->ap_first_minimal = enabled;
+            saved = *g_state;
+            state_exit();
+            Serial.printf("[Web] Minimal Inject: %s\n", enabled ? "ON" : "OFF");
             prefs_save(&saved);
         }
     } else if (strstr(buf, "\"nag_faithful\"")) {

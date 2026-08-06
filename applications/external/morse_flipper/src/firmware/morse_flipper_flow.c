@@ -81,6 +81,12 @@ static uint8_t morse_flipper_scene_screen(uint32_t scene) {
         return MorseFlipperScreenTxGroupsResult;
     case MorseFlipperSceneTxGroupsFinal:
         return MorseFlipperScreenTxGroupsFinal;
+    case MorseFlipperSceneOnboarding:
+        return MorseFlipperScreenOnboarding;
+    case MorseFlipperSceneProgress:
+        return MorseFlipperScreenProgress;
+    case MorseFlipperSceneStreakIntro:
+        return MorseFlipperScreenStreakIntro;
     default:
         return MorseFlipperScreenMenu;
     }
@@ -117,12 +123,7 @@ void morse_flipper_scene_enter_now(MorseFlipperApp* app, uint32_t scene) {
 
     morse_flipper_ensure_view(app, view);
 
-    if(view == MorseFlipperViewLive) {
-        view_dispatcher_switch_to_view(app->view_dispatcher, view);
-        morse_flipper_enter_screen(app, morse_flipper_scene_screen(scene), scene, furi_get_tick());
-        return;
-    }
-
     morse_flipper_enter_screen(app, morse_flipper_scene_screen(scene), scene, furi_get_tick());
     view_dispatcher_switch_to_view(app->view_dispatcher, view);
+    if(view == MorseFlipperViewLive) morse_flipper_view_dirty(app);
 }

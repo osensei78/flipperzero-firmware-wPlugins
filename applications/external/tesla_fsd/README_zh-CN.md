@@ -163,7 +163,7 @@ git clone https://github.com/hypery11/flipper-tesla-fsd.git applications_user/te
 |------|------|
 | **Abort Guard**（ESP32） | Steer-jerk 缓解（[#108](https://github.com/hypery11/flipper-tesla-fsd/issues/108)）。启动瞬间的方向盘抽动其实是车自己**中止**接管（`DAS_autopilotState` → `8 ABORTING` → `9 ABORTED`）。开启后一检测到 abort 状态就立刻切掉所有 activation 注入，并维持到干净脱离。**已上车验证：** 在宽／直路上消除了抽动（数百次循环 0 次，原本约 1/25–30）。局限：部分窄路会直接跳到 `FAULT (9)`、没有前导信号，挡不住。 |
 | **Soft Engage** | Steer-jerk 缓解（[#108](https://github.com/hypery11/flipper-tesla-fsd/issues/108)）。把启动边缘的注入压住，直到方向盘回到中心 ±5° 内。需要总线上有 `0x129`（方向盘角度）；没有就退化成只有 AP-First。直路抽动已大致被 Abort Guard 取代。 |
-| **Nag Burst** | 以爆发／暂停方式回放 `0x370`（约 1 秒开 / 1.5 秒关），而非连续（[#122](https://github.com/hypery11/flipper-tesla-fsd/issues/122)）。休息期被认为是 TSL6P 类设备能躲过更严格 14.x nag 检测的原因。搭配 ±1.8 Nm 转向扭力上限。 |
+| **Nag Burst** | 以爆发／暂停方式回放 `0x370`（约 1 秒开 / 1.5 秒关），而非连续（[#122](https://github.com/hypery11/flipper-tesla-fsd/issues/122)）。休息期被认为是一些在野设备能躲过更严格 14.x nag 检测的原因。搭配 ±1.8 Nm 转向扭力上限。 |
 | **EPAS-faithful（Mode-C）** | 模拟真实 EPAS 的 demand-state 扭力模型，不去翻 `handsOnLevel`（[#100](https://github.com/hypery11/flipper-tesla-fsd/issues/100)）。用于标准 nag 抑制会触发 preflight 的车。**尚未上车确认。** |
 | **Signal Map**（ESP32 → 高级） | 自定义 nag 抑制读取 AP-state／hands-on／方向盘的位置：`id + byte/shift/mask`（[#122](https://github.com/hypery11/flipper-tesla-fsd/issues/122)）。用于 `0x39B`/`0x399` 布局不同的车型变体。有新鲜度门控 — 设错会 fail-closed。DAS id 留 `0` 为自动检测。 |
 
@@ -248,6 +248,16 @@ git clone https://github.com/hypery11/flipper-tesla-fsd.git applications_user/te
 - `Starmixcraft/tesla-fsd-can-mod` — 原始 CanFeather FSD 研究（GitLab 上已被下架，鏡像在 [Karolynaz/waymo-fsd-can-mod](https://github.com/Karolynaz/waymo-fsd-can-mod)）
 - mikegapinski/tesla-can-explorer — 從 Tesla 主機 `libQtCarVAPI.so` 萃取的 4 萬個 Tesla CAN 訊號字典
 - talas9/tesla_can_signals — 各车型 wire format 對照
+
+## 支持这个项目
+
+如果这个项目帮你省下了改装盒子的钱、让你看懂 Tesla 的 CAN bus，或在封锁后保住了你的 TLSSC，欢迎赞助持续的研究与测试。
+
+[![Crypto](https://img.shields.io/badge/Crypto-Donate-F7931A?style=for-the-badge&logo=bitcoin&logoColor=white)](https://fsd.fkey.id/) [![PayPal](https://img.shields.io/badge/PayPal-Donate-00457C?style=for-the-badge&logo=paypal&logoColor=white)](https://www.paypal.com/cgi-bin/webscr?cmd=_xclick&business=hypery11@gmail.com&item_name=Tesla+FSD+Open+Source+Research&currency_code=USD) [![GitHub Sponsors](https://img.shields.io/badge/Sponsor-hypery11-EA4AAA?style=for-the-badge&logo=github&logoColor=white)](https://github.com/sponsors/hypery11)
+
+加密货币请至 **[fsd.fkey.id](https://fsd.fkey.id/)** — 同一个地址、支持多链。实际可用的网络请直接打开页面查看。
+
+款项用于测试用的 Tesla 零件（待救援的封锁 VIN、不同 MCU/硬件组合）、各种 ESP32 硬件，以及逆向新固件版本所花的时间。
 
 ## 授权
 

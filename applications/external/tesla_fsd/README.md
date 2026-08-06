@@ -135,7 +135,7 @@ These target Tesla 2026.14.x / 2026.20 behaviour and are all **off by default**.
 |---------|-------------|
 | **Abort Guard** (ESP32) | Steer-jerk mitigation ([#108](https://github.com/hypery11/flipper-tesla-fsd/issues/108)). The activation jerk is the car *aborting* the engage (`DAS_autopilotState` → `8 ABORTING` → `9 ABORTED`). When on, cuts all activation injection the instant an abort state appears and stays off until a clean disengage. **Validated on-car:** eliminated the jerk on wide/straight roads (0 in hundreds of cycles, was ~1/25–30). Limit: some narrow roads jump straight to `FAULT (9)` with no lead, which it can't catch. |
 | **Soft Engage** | Steer-jerk mitigation ([#108](https://github.com/hypery11/flipper-tesla-fsd/issues/108)). Holds the activation-edge injection until the wheel is within ±5° of centre. Needs `0x129` (steering angle) on the tapped bus; degrades to AP-First-only if absent. Largely superseded by Abort Guard for straight-road jerks. |
-| **Nag Burst** | Echoes `0x370` in bursts (~1 s on / ~1.5 s off) instead of continuously ([#122](https://github.com/hypery11/flipper-tesla-fsd/issues/122)). The rest periods are the believed reason a TSL6P-style device evades the stricter 14.x nag detector. Pairs with a ±1.8 Nm steering-torque cap. |
+| **Nag Burst** | Echoes `0x370` in bursts (~1 s on / ~1.5 s off) instead of continuously ([#122](https://github.com/hypery11/flipper-tesla-fsd/issues/122)). The rest periods are the believed reason some in-the-wild devices evade the stricter 14.x nag detector. Pairs with a ±1.8 Nm steering-torque cap. |
 | **EPAS-faithful (Mode-C)** | Demand-state torque model that mirrors a real EPAS instead of flipping `handsOnLevel` ([#100](https://github.com/hypery11/flipper-tesla-fsd/issues/100)). For cars where the standard nag killer trips the preflight. **Not yet confirmed on-car.** |
 | **Signal Map** (ESP32 → advanced) | Override where the nag killer reads AP-state / hands-on / steering: `id + byte/shift/mask` ([#122](https://github.com/hypery11/flipper-tesla-fsd/issues/122)). For variants whose `0x39B`/`0x399` layout differs. Freshness-gated — a wrong map fails closed. Leave DAS id `0` for auto-detect. |
 
@@ -199,6 +199,23 @@ See [`esp32/README.md`](https://github.com/hypery11/flipper-tesla-fsd/tree/main/
 
 ## Installation
 
+### Getting Started (no build tools needed)
+
+New to this and not very technical? Pick your hardware — both paths avoid the command line:
+
+**Flipper Zero**
+1. Open [Releases](https://github.com/hypery11/flipper-tesla-fsd/releases) and download `tesla_mod.fap` from the latest release.
+2. Connect the Flipper and open [qFlipper](https://flipperzero.one/update) (the official desktop app).
+3. Copy `tesla_mod.fap` onto the SD card into `apps/GPIO/`.
+4. On the Flipper: **Apps → GPIO → Tesla Mod**.
+
+**ESP32** — flash it straight from your browser, nothing to install:
+1. Get the flasher: either open the hosted **[Web Flasher](https://hypery11.github.io/flipper-tesla-fsd/install/)**, or download `tesla-flasher.html` from the latest [release](https://github.com/hypery11/flipper-tesla-fsd/releases) and open it — both work in **Chrome, Edge, or Opera** on a desktop.
+2. Plug the board in over USB, press **Install** next to your board, and pick the serial port.
+3. When it finishes, connect to the board's Wi-Fi network and open `http://192.168.4.1` to control it.
+
+The board starts in **Listen-Only mode** (it can't transmit) until you enable Active in the dashboard. The wiring to your car depends on your Tesla model/year — see [HARDWARE.md](HARDWARE.md) or open an issue.
+
 ### Option 1: Download Pre-built FAP
 
 1. Go to [Releases](https://github.com/hypery11/flipper-tesla-fsd/releases)
@@ -215,6 +232,8 @@ ufbt
 ```
 
 ### ESP32
+
+> Prefer not to build? Flash a pre-built image from the **[Web Flasher](https://hypery11.github.io/flipper-tesla-fsd/install/)** — one click, no toolchain.
 
 ```bash
 git clone https://github.com/hypery11/flipper-tesla-fsd.git
@@ -342,7 +361,9 @@ For the Flipper: yes, any MCP2515-based module (Electronic Cats, generic boards)
 
 If this project saved you money on an aftermarket dongle, helped you understand Tesla's CAN bus, or kept your TLSSC working through a ban, consider supporting the ongoing research and testing.
 
-[![PayPal](https://img.shields.io/badge/PayPal-Donate-00457C?style=for-the-badge&logo=paypal&logoColor=white)](https://www.paypal.com/cgi-bin/webscr?cmd=_xclick&business=hypery11@gmail.com&item_name=Tesla+FSD+Open+Source+Research&currency_code=USD) [![GitHub Sponsors](https://img.shields.io/badge/Sponsor-hypery11-EA4AAA?style=for-the-badge&logo=github&logoColor=white)](https://github.com/sponsors/hypery11)
+[![Crypto](https://img.shields.io/badge/Crypto-Donate-F7931A?style=for-the-badge&logo=bitcoin&logoColor=white)](https://fsd.fkey.id/) [![PayPal](https://img.shields.io/badge/PayPal-Donate-00457C?style=for-the-badge&logo=paypal&logoColor=white)](https://www.paypal.com/cgi-bin/webscr?cmd=_xclick&business=hypery11@gmail.com&item_name=Tesla+FSD+Open+Source+Research&currency_code=USD) [![GitHub Sponsors](https://img.shields.io/badge/Sponsor-hypery11-EA4AAA?style=for-the-badge&logo=github&logoColor=white)](https://github.com/sponsors/hypery11)
+
+Crypto goes to **[fsd.fkey.id](https://fsd.fkey.id/)** — one address, multi-chain. Open the page to see the networks it currently accepts.
 
 Funds go toward Tesla parts for testing (banned VINs to recover, different MCU/HW combos), ESP32 hardware variants, and time spent reverse-engineering new firmware versions.
 

@@ -1,0 +1,1572 @@
+/*
+ * Flock Companion - universal ESP32 Wi-Fi sniffer for the Flipper Zero
+ * "Recon Site Survey" app.
+ *
+ * Runs on ANY ESP32 board exposed to the Flipper UART (Marauder hardware,
+ * ReksLab Tri-Board, bare WROVER/WROOM, Xiao ESP32-S3, DevKitC, ...).
+ * Puts the radio in promiscuous monitor mode, hops channels 1-13 (plus the 28
+ * 5 GHz channels on an ESP32-C5, which has a dual-band radio), and reports
+ * frames that look like Flock Safety / ALPR surveillance gear (by OUI, by
+ * phone-home probe behaviour, and by SSID naming) over the serial link in a
+ * simple line protocol the Flipper parses.
+ *
+ * Detection method and OUI list are from the open-source counter-surveillance
+ * projects (colonelpanichacks/flock-you, 0xXyc/flock-you-wifi-recon,
+ * nitekry/nite-oui-collection) and the DeFlock community. Passive recon only --
+ * no deauth, no injection.
+ *
+ * Build: Arduino IDE or arduino-cli with the esp32 core. Select your board,
+ * set Serial baud to 115200. No extra libraries required.
+ *
+ * Line protocol (newline-terminated, ASCII), TX to Flipper:
+ *   FLOCKCO,1                              banner / version on boot and on "ver"
+ *   S,<frames>,<hits>,<ch>,<deauth_rate>   status, ~1 Hz (deauth/disassoc per interval)
+ *   D,<mac>,<rssi>,<ch>,<type>,<conf>,<ssid>[,fp=<hex32>][,cls=a][,hid=1]  detection
+ *       mac : aabbccddeeff (lower hex, no separators)
+ *       rssi: signed dBm
+ *       ch  : 1-13 (2.4 GHz), or 36-177 (5 GHz, ESP32-C5 only)
+ *       type: P=probe-req  B=beacon  R=probe-resp  O=other
+ *       conf: 1=possible 2=likely 3=confirmed (ESP-side score)
+ *       ssid: raw SSID with ',' and control chars stripped (may be empty)
+ *       fp  : FNV-1a uint32 (8 lower-hex) of the probe's IE skeleton (B1) --
+ *             a MAC-independent device-CLASS fingerprint; trailing field,
+ *             older parsers ignore it. Only emitted for probe requests.
+ *       cls : device class. 'a' = SoundThinking acoustic sensor. Absent means
+ *             ALPR camera, so the common case adds no bytes. Trailing.
+ *       hid : the AP beaconed WITHOUT an SSID (zero-length or all-NUL IE).
+ *             Beacons/probe-responses only. An observation the Flipper reports
+ *             but does NOT score -- hiding an SSID is also ordinary consumer
+ *             router behaviour. Trailing, only emitted when true.
+ *
+ *       All three trailing key=value fields are optional and order-independent.
+ *       Add one and you must also grow the field array in esp_parser.c.
+ *   BLE,<addr>,<rssi>,<cat>,<company>,<name>[,<mfghex>][,rv=1]   BLE device
+ *       cat   : 0 unknown 1 Flock/Raven 2 AirTag 3 Tile 4 SmartTag 5 FMDN
+ *       mfghex: raw mfg-data hex (Flock 0x09C8 only) for serial decode; pure
+ *               hex, no '='. Trailing, older parsers ignore.
+ *       rv=1  : the device exposed a Raven-specific GATT service (0x3100-
+ *               0x3500) -> positive acoustic-sensor (Raven) identification.
+ *               Trailing, contains '=' so it's distinguishable from mfghex;
+ *               only emitted when matched, older parsers ignore.
+ *   DA,<bssid>,<ch>                        deauth/disassoc attack target (attributed)
+ *   ATK,<kind>,<value>                     active attack-tool signature
+ *       kind : probeflood  (abnormal probe-request rate)
+ *              beaconflood (many DISTINCT beaconing BSSIDs/s: Marauder/Pineapple)
+ *              blespam     (Apple/Samsung/Google pairing-advert flood)
+ *       value: the count/rate measured. New line; older app builds ignore it.
+ *   LOC,<rssi>                             Locator: live RSSI of the active target
+ *                                          (signed dBm), streamed while homing.
+ *   BAND,<2g|5g|all>,<channels>            ACK for the `band` command: the band
+ *                                          actually in force and how many
+ *                                          channels the sweep now covers. On a
+ *                                          2.4-only radio this always answers
+ *                                          2g, whatever was asked -- claiming
+ *                                          5 GHz coverage the chip cannot
+ *                                          provide would be a lie on the wire.
+ *
+ * RX from Flipper (commands, newline-terminated):
+ *   scan   start reporting        stop   pause reporting
+ *   ver    re-send banner         ch <n> lock to channel n (0 = hop)
+ *   band <2g|5g|all>         pick which band(s) the hopper sweeps (C5 only;
+ *                            a 2.4-only radio always ends up on 2g)
+ *   locate <w|b> <mac> [ch]  stream LOC for a target (w=Wi-Fi, b=BLE; mac is
+ *                            aabbccddeeff). "locate off" (or any other command)
+ *                            ends Locator mode.
+ */
+
+#include <Arduino.h>
+#include <stdarg.h> // buf_appendf()
+#include "soc/soc_caps.h" // SOC_GPIO_PIN_COUNT / SOC_GPIO_VALID_GPIO_MASK
+#include "soc/spi_pins.h" // SPI_IOMUX_PIN_NUM_* -- this chip's flash pins
+#include "soc/uart_pins.h" // U0TXD_GPIO_NUM / U0RXD_GPIO_NUM -- the Flipper link
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "nvs_flash.h"
+
+#include <BLEDevice.h>
+#include <BLEScan.h>
+#include <BLEAdvertisedDevice.h>
+
+#include <string>
+
+/* ---- Arduino-ESP32 core 2.x / 3.x compatibility ---------------------------
+ *
+ * Core 3.x (IDF 5.x) changed the BLE API in ways that break compilation
+ * outright, not subtly. Reported by @h00die (issue #4) on core 3.3.11, which is
+ * what a fresh Arduino install gets TODAY -- so before this shim, anyone
+ * following our own README hit a wall of errors. Our CI pinned 2.0.17, so it
+ * never saw any of it. A pin is not portability; it just hides the question.
+ *
+ * The three breaks:
+ *
+ *   1. BLEScan::start(secs, bool) returns BLEScanResults* in 3.x, by value in 2.x.
+ *   2. getManufacturerData() / getName() / BLEUUID::toString() /
+ *      BLEAddress::toString() return Arduino String in 3.x, std::string in 2.x.
+ *   3. BLEAddress::getNative() returns const uint8_t* in 3.x, but uint8_t(*)[6]
+ *      in 2.x -- so the 2.x code deref'd it once and 3.x gave back a single byte.
+ *
+ * Normalised to std::string here because the detection logic below does
+ * substring work (find/rfind) that reads clearly in std::string and would have
+ * to be rewritten for String. Conversion is LENGTH-PRESERVING on purpose:
+ * manufacturer data is binary and can contain NUL bytes, so it is rebuilt with
+ * the (pointer, length) constructor rather than treated as a C string -- a
+ * strlen-style copy would silently truncate an advert at its first zero byte and
+ * lose the Flock 0x09C8 payload we decode serials from.
+ *
+ * ESP_ARDUINO_VERSION_MAJOR is absent on very old cores; treat absent as 2.x.
+ */
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+#define FLOCK_ARDUINO3 1
+#else
+#define FLOCK_ARDUINO3 0
+#endif
+
+#if FLOCK_ARDUINO3
+/** Arduino String -> std::string, preserving embedded NULs. */
+static inline std::string fstr(const String& s) {
+    return std::string(s.c_str(), s.length());
+}
+/** 3.x hands back a pointer to the scan's internal results. */
+#define FLOCK_SCAN(scan, secs) (*(scan)->start((secs), false))
+/** Same, but `cont` keeps results accumulated from earlier slices. */
+#define FLOCK_SCAN_CONT(scan, secs, cont) (*(scan)->start((secs), (cont)))
+/** 3.x: already a flat pointer to the 6 address bytes. */
+static inline const uint8_t* fble_addr_bytes(BLEAddress& a) {
+    return a.getNative();
+}
+#else
+/** 2.x already returns std::string; pass through so call sites stay identical. */
+static inline std::string fstr(const std::string& s) {
+    return s;
+}
+/** 2.x returns by value. */
+#define FLOCK_SCAN(scan, secs) ((scan)->start((secs), false))
+/** Same, but `cont` keeps results accumulated from earlier slices. */
+#define FLOCK_SCAN_CONT(scan, secs, cont) ((scan)->start((secs), (cont)))
+/** 2.x: uint8_t(*)[6], so one deref yields the uint8_t*. */
+static inline const uint8_t* fble_addr_bytes(BLEAddress& a) {
+    return *a.getNative();
+}
+#endif
+
+// ---- Flock-associated OUI prefixes (31) ----------------------------------
+// MUST stay byte-identical to flock_ouis[] in helpers/flock_db.c. There is no
+// shared header (an Arduino sketch cannot include the app's), so editing one
+// side alone would silently desync ESP-side `conf` scoring from the Flipper's.
+// tools/check_oui_parity.py is a REQUIRED CI gate that catches exactly that.
+// See flock_db.c for the provenance notes. f8:a2:d6 dropped 2026-07-27 (upstream
+// false positive: hit on a Sony Media Player) -- do NOT re-add it from the older
+// flat OUI list.
+//
+// The last entry, b4:1e:52, is Flock Safety's own registered OUI (GainSec).
+// Row layout matches flock_db.c line-for-line so the two can be diffed by eye.
+static const uint8_t FLOCK_OUIS[][3] = {
+    {0x70, 0xc9, 0x4e}, {0x3c, 0x91, 0x80}, {0xd8, 0xf3, 0xbc}, {0x80, 0x30, 0x49},
+    {0xb8, 0x35, 0x32}, {0x14, 0x5a, 0xfc}, {0x74, 0x4c, 0xa1}, {0x08, 0x3a, 0x88},
+    {0x9c, 0x2f, 0x9d}, {0xc0, 0x35, 0x32}, {0x94, 0x08, 0x53}, {0xe4, 0xaa, 0xea},
+    {0xf4, 0x6a, 0xdd}, {0x24, 0xb2, 0xb9}, {0x00, 0xf4, 0x8d}, {0xd0, 0x39, 0x57},
+    {0xe8, 0xd0, 0xfc}, {0xe0, 0x4f, 0x43}, {0xb8, 0x1e, 0xa4}, {0x70, 0x08, 0x94},
+    {0x58, 0x8e, 0x81}, {0xec, 0x1b, 0xbd}, {0x3c, 0x71, 0xbf}, {0x58, 0x00, 0xe3},
+    {0x90, 0x35, 0xea}, {0x5c, 0x93, 0xa2}, {0x64, 0x6e, 0x69}, {0x48, 0x27, 0xea},
+    {0xa4, 0xcf, 0x12}, {0x82, 0x6b, 0xf2}, {0xb4, 0x1e, 0x52},
+};
+static const size_t FLOCK_OUI_COUNT = sizeof(FLOCK_OUIS) / sizeof(FLOCK_OUIS[0]);
+
+// ---- SoundThinking / ShotSpotter acoustic sensors (1) --------------------
+// A DIFFERENT DEVICE CLASS from the ALPRs above: these listen, they do not read
+// plates. Matches are tagged `cls=a` on the wire so the Flipper can say which it
+// found. MUST stay byte-identical to soundthinking_ouis[] in helpers/flock_db.c.
+static const uint8_t SOUNDTHINKING_OUIS[][3] = {
+    {0xd4, 0x11, 0xd6},
+};
+static const size_t SOUNDTHINKING_OUI_COUNT =
+    sizeof(SOUNDTHINKING_OUIS) / sizeof(SOUNDTHINKING_OUIS[0]);
+
+// ---- State ---------------------------------------------------------------
+//
+// THREADING. promisc_cb() runs in the WiFi driver task (usually core 0) and
+// loop()/handle_command() run in the Arduino task (core 1), so everything they
+// share needs `volatile` at minimum, and a critical section wherever a read and
+// a write must agree with each other.
+//
+// g_mux guards the two places where a torn read is not merely inaccurate but
+// unsafe or wrong: the beacon ring (whose count BOUNDS an array write) and the
+// Locator target (a 6-byte MAC that must be swapped atomically or promisc_cb
+// homes on a half-old, half-new address for a few frames).
+//
+// The frame counters below are deliberately NOT protected. `volatile` does not
+// make `++` atomic, so they can lose the odd increment under contention -- but
+// they are display-only rate indicators reset every interval, and taking a lock
+// per frame inside the WiFi callback would cost more than the drift.
+static portMUX_TYPE g_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static volatile bool g_scanning = true;
+static volatile uint32_t g_frames = 0;
+static volatile uint32_t g_hits = 0;
+static volatile uint32_t g_deauths = 0; // deauth + disassoc frames seen (attack indicator)
+static volatile uint8_t g_channel = 1;
+static uint8_t g_lock_channel = 0; // 0 = hop
+/** Highest 2.4 GHz channel the hopper visits. See the hop block in loop(). */
+#define MAX_HOP_CHANNEL 13
+
+/* ---- Dual-band (5 GHz) support -------------------------------------------
+ *
+ * A 2.4-only companion CANNOT SEE a Flock uplink on 5 GHz -- not "sees it
+ * weakly", cannot see it at all. The ESP32-C5 is the first Espressif part with a
+ * 5 GHz radio, so on that chip we hop both bands.
+ *
+ * Gated on the SoC capability, not on a board name: SOC_WIFI_SUPPORT_5G comes
+ * from the IDF's own soc_caps.h, so a classic ESP32/S3/C3 compiles exactly as
+ * before and pays nothing (the 5 GHz table is not even emitted). Requires
+ * Arduino core 3.x, which is where the C5 exists at all.
+ *
+ * Channel list is the 28 20 MHz channels the IDF enumerates for this radio
+ * (esp_wifi_types_generic.h). Band switching is done purely by setting the
+ * channel: the IDF docs say to prefer esp_wifi_set_channel() over
+ * esp_wifi_set_band(), and it moves bands on its own once band mode is AUTO.
+ *
+ * COST, stated plainly: a full sweep goes from 13 channels to 41. At the same
+ * 300 ms dwell that is ~12.3 s per sweep instead of ~3.9 s, so a given camera is
+ * revisited a third as often. That is the honest price of covering a band we
+ * currently cannot see, and `band 2g` returns the fast sweep for anyone who
+ * wants it.
+ */
+#if defined(SOC_WIFI_SUPPORT_5G) && SOC_WIFI_SUPPORT_5G
+#define FLOCK_HAS_5GHZ 1
+#else
+#define FLOCK_HAS_5GHZ 0
+#endif
+
+#if FLOCK_HAS_5GHZ
+/** 5 GHz 20 MHz channels, incl. DFS (52-144) -- we only ever listen. */
+static const uint8_t CHANNELS_5G[] = {36,  40,  44,  48,  52,  56,  60,  64,  100, 104,
+                                      108, 112, 116, 120, 124, 128, 132, 136, 140, 144,
+                                      149, 153, 157, 161, 165, 169, 173, 177};
+#define CHANNELS_5G_COUNT (sizeof(CHANNELS_5G) / sizeof(CHANNELS_5G[0]))
+#endif
+
+/** Which band(s) the hopper sweeps. `band 2g|5g|all` selects at runtime. */
+typedef enum {
+    FlockBand2G = 0,
+    FlockBand5G = 1,
+    FlockBandAll = 2,
+} FlockBandSel;
+
+/* Default: sweep everything the radio can reach. On a 2.4-only part this is
+ * identical to the old behaviour, because the 5 GHz list does not exist. */
+#if FLOCK_HAS_5GHZ
+static FlockBandSel g_band = FlockBandAll;
+#else
+static FlockBandSel g_band = FlockBand2G;
+#endif
+
+/** Hop cursor: index into the logical (2.4 then 5) channel sequence. */
+static uint16_t g_hop_i = 0;
+
+/** True if `ch` is a 5 GHz channel number (2.4 GHz tops out at 14). */
+static inline bool is_5ghz_channel(uint8_t ch) {
+    return ch >= 36;
+}
+
+/** Number of channels in the current sweep. */
+static uint16_t hop_count() {
+    uint16_t n = 0;
+    if(g_band == FlockBand2G || g_band == FlockBandAll) n += MAX_HOP_CHANNEL;
+#if FLOCK_HAS_5GHZ
+    if(g_band == FlockBand5G || g_band == FlockBandAll) n += CHANNELS_5G_COUNT;
+#endif
+    return n ? n : MAX_HOP_CHANNEL; // never zero: degrade to 2.4 rather than stall
+}
+
+/** i-th channel of the current sweep (2.4 GHz first, then 5 GHz). */
+static uint8_t hop_channel(uint16_t i) {
+    bool do_24 = (g_band == FlockBand2G || g_band == FlockBandAll);
+#if FLOCK_HAS_5GHZ
+    bool do_5 = (g_band == FlockBand5G || g_band == FlockBandAll);
+#else
+    bool do_5 = false;
+#endif
+    if(do_24) {
+        if(i < MAX_HOP_CHANNEL) return (uint8_t)(i + 1);
+        i -= MAX_HOP_CHANNEL;
+    }
+#if FLOCK_HAS_5GHZ
+    if(do_5 && i < CHANNELS_5G_COUNT) return CHANNELS_5G[i];
+#else
+    (void)do_5;
+#endif
+    return 1;
+}
+static uint32_t g_last_status = 0;
+static uint32_t g_last_hop = 0;
+static uint32_t g_deauths_last = 0; // for per-interval deauth rate
+static uint32_t g_last_da = 0; // rate-limit DA attribution lines
+
+// ---- Active attack-tool detection (emitted as ATK lines, ~1 Hz) -----------
+// These are RATE signals reset every status interval, so the alert clears when
+// the attack stops. Thresholds are deliberately conservative to avoid false
+// positives in dense-but-benign RF; tune for your environment.
+//   probeflood : abnormal probe-request rate (KARMA / mass-probe tools)
+//   beaconflood: many DISTINCT beaconing BSSIDs/s (Marauder/Pineapple SSID spam)
+//   blespam    : a flood of impersonation BLE adverts (Flipper/ESP BLE spam)
+#define PROBE_FLOOD_MIN  80 // probe requests in one ~1 s interval
+#define BEACON_FLOOD_MIN 40 // distinct beaconing BSSIDs in one ~1 s interval
+#define BLE_SPAM_MIN     12 // impersonation-class adverts in one BLE scan
+static volatile uint32_t g_probe_reqs = 0; // probe requests this interval (reset ~1 Hz)
+#define BEACON_RING 64
+static uint32_t g_beacon_ring[BEACON_RING]; // recent beacon-BSSID hashes this interval
+static uint8_t g_beacon_ring_n = 0;
+static uint32_t g_beacon_distinct = 0; // distinct beaconing BSSIDs this interval
+
+// Note a beacon's source BSSID; counts it once per interval. Approximate by
+// design (a small ring + best-effort across the WiFi-callback / loop tasks) --
+// it only needs to tell "a handful of real APs" from "a spam flood."
+static void note_beacon_bssid(const uint8_t* bssid) {
+    uint32_t h = 2166136261u; // FNV-1a over the 6 BSSID bytes (inlined: no fwd dep)
+    for(int i = 0; i < 6; i++) {
+        h ^= bssid[i];
+        h *= 16777619u;
+    }
+    // The scan and the append must see the SAME g_beacon_ring_n: it is both the
+    // dedup bound and the write index, and loop() zeroes it from the other core
+    // every status interval. Hash outside the lock, hold it only for the ring.
+    portENTER_CRITICAL(&g_mux);
+    for(uint8_t i = 0; i < g_beacon_ring_n; i++) {
+        if(g_beacon_ring[i] == h) { // already counted this interval
+            portEXIT_CRITICAL(&g_mux);
+            return;
+        }
+    }
+    if(g_beacon_ring_n < BEACON_RING) {
+        g_beacon_ring[g_beacon_ring_n++] = h;
+        g_beacon_distinct++;
+    }
+    portEXIT_CRITICAL(&g_mux);
+}
+
+// ---- Locator: stream live RSSI for one target so the app can home in on it ---
+// 'w' Wi-Fi (match the MAC in promiscuous frames, channel-locked) or 'b' BLE
+// (match the addr in a repeating scan). MAC kept BOTH as bytes (Wi-Fi, compared
+// to raw frame bytes) and as the lowercase hex string (BLE, compared to the
+// same toString() form the BLE line is built from -- avoids byte-order traps).
+// volatile: promisc_cb (WiFi task) reads g_locate_kind as the fast gate before
+// touching the target. The target bytes themselves are swapped under g_mux.
+static volatile char g_locate_kind = 0; // 0 none / 'w' / 'b'
+static uint8_t g_locate_mac[6];
+static char g_locate_macs[13]; // lowercase hex, no separators
+static uint8_t g_locate_ch = 0;
+static int g_locate_best = -127; // strongest RSSI since the last LOC emit (Wi-Fi)
+static uint32_t g_last_loc = 0; // LOC emit throttle
+
+static int hexv(char c) {
+    if(c >= '0' && c <= '9') return c - '0';
+    if(c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if(c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+static bool parse_hexmac(const char* s, uint8_t out[6]) {
+    for(int i = 0; i < 6; i++) {
+        int hi = hexv(s[i * 2]), lo = hexv(s[i * 2 + 1]);
+        if(hi < 0 || lo < 0) return false;
+        out[i] = (uint8_t)((hi << 4) | lo);
+    }
+    return true;
+}
+
+// Dual-band (WiFi + BLE) Flock detection. BLE is initialised once and kept
+// resident (avoids the Bluedroid init/deinit heap leak); the radio is shared by
+// toggling promiscuous off during a BLE scan, then back on. flockcombo
+// interleaves a WiFi-promiscuous phase with a periodic BLE scan phase.
+static bool g_ble_inited = false;
+static BLEScan* g_ble = nullptr;
+static bool g_combo = false;
+static uint32_t g_phase_start = 0;
+#define COMBO_WIFI_MS 9000 // ~3 channel sweeps before a BLE scan (WiFi-biased)
+#define COMBO_BLE_SEC 3 // BLE scan seconds (BLE adverts repeat fast)
+
+/**
+ * First-byte rejection bitmap for the OUI tables.
+ *
+ * promisc_cb() tests TWO addresses on EVERY management frame, and each test used
+ * to walk all 31 Flock prefixes plus the SoundThinking one -- up to 64 three-byte
+ * comparisons per frame, inside the WiFi driver callback, before any filtering.
+ * The overwhelming majority of frames match nothing.
+ *
+ * 256 bits (32 bytes) say whether ANY table entry starts with a given byte, so
+ * the common no-match case costs one array index and one bit test. Built once at
+ * boot by oui_index_init(); the tables are const, so it can never go stale.
+ */
+// Built during C++ static initialisation, i.e. before setup() and before any
+// frame can arrive. Deliberately NOT an init function called from setup():
+// forgetting that call would make every OUI test return false and silently kill
+// all detection, which is the worst possible failure mode for this app. Deriving
+// the index from the tables in a constructor makes that unrepresentable.
+static const struct OuiFirstIndex {
+    uint8_t bits[32]; // bit b set => some prefix starts with byte b
+    OuiFirstIndex() : bits{} {
+        for(size_t i = 0; i < FLOCK_OUI_COUNT; i++) {
+            uint8_t b = FLOCK_OUIS[i][0];
+            bits[b >> 3] |= (uint8_t)(1u << (b & 7));
+        }
+        for(size_t i = 0; i < SOUNDTHINKING_OUI_COUNT; i++) {
+            uint8_t b = SOUNDTHINKING_OUIS[i][0];
+            bits[b >> 3] |= (uint8_t)(1u << (b & 7));
+        }
+    }
+} g_oui_index;
+
+static inline bool oui_first_possible(uint8_t b) {
+    return (g_oui_index.bits[b >> 3] >> (b & 7)) & 1;
+}
+
+static bool flock_oui_match(const uint8_t* mac) {
+    if(!oui_first_possible(mac[0])) return false; // fast reject, no table walk
+    for(size_t i = 0; i < FLOCK_OUI_COUNT; i++) {
+        if(mac[0] == FLOCK_OUIS[i][0] && mac[1] == FLOCK_OUIS[i][1] &&
+           mac[2] == FLOCK_OUIS[i][2])
+            return true;
+    }
+    return false;
+}
+
+static bool st_oui_match(const uint8_t* mac) {
+    if(!oui_first_possible(mac[0])) return false; // fast reject, no table walk
+    for(size_t i = 0; i < SOUNDTHINKING_OUI_COUNT; i++) {
+        if(mac[0] == SOUNDTHINKING_OUIS[i][0] && mac[1] == SOUNDTHINKING_OUIS[i][1] &&
+           mac[2] == SOUNDTHINKING_OUIS[i][2])
+            return true;
+    }
+    return false;
+}
+
+// Any known surveillance-vendor prefix, either class. Scoring is class-agnostic;
+// the class itself rides along in the `cls=` field.
+static bool oui_match(const uint8_t* mac) {
+    return flock_oui_match(mac) || st_oui_match(mac);
+}
+
+static char lc(char c) {
+    return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+}
+
+/**
+ * True if `s` is EXACTLY "flock-" + 6 hex digits: the provisioning-AP name.
+ *
+ * Mirrors is_flock_provisioning_ssid() in helpers/flock_db.c -- keep the two in
+ * step, same hand-sync rule as the OUI tables above.
+ *
+ * ANCHORED on purpose. This used to be a bare strstr(buf, "flock-"), which
+ * confirmed every benign name that merely contained the substring:
+ * "Flock-Guest", "Flock-Safety-Corp", "Flock-12345". The Flipper takes the
+ * companion's conf verbatim on this path, so that went straight to the screen
+ * as CONFIRMED. Those now fall through to the "likely" check below.
+ *
+ * `s` is already lower-cased by the caller, so only a-f need testing.
+ */
+static bool is_flock_provisioning_ssid(const char* s) {
+    if(strncmp(s, "flock-", 6) != 0) return false;
+    for(int i = 6; i < 12; i++) {
+        char c = s[i]; // '\0' on a short SSID is not hex -> correctly rejected
+        bool hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        if(!hex) return false;
+    }
+    return s[12] == '\0'; // nothing may follow the 6 hex digits
+}
+
+// Returns: 0 none, 2 likely (flock/flck substring), 3 confirmed
+// (^flock-[0-9a-f]{6}$ or the test_flck dev SSID, CVE-2025-59409)
+static int ssid_score(const char* s, int len) {
+    if(len <= 0) return 0;
+    char buf[64];
+    int n = len < 63 ? len : 63;
+    for(int i = 0; i < n; i++) buf[i] = lc(s[i]);
+    buf[n] = 0;
+    if(is_flock_provisioning_ssid(buf) || strstr(buf, "test_flck")) return 3;
+    if(strstr(buf, "flock") || strstr(buf, "flck")) return 2;
+    return 0;
+}
+
+// Append up to `max` bytes of `s` into buf[*pos], stripping ',', CR, LF and control chars
+// to '.' so the payload can't break the line protocol. Bounds-checked; advances *pos.
+// Callers assemble a whole line in one buffer and emit it with a SINGLE Serial.write, so a
+// line built in promisc_cb (WiFi task) can't interleave on the UART with loop()'s status
+// lines -- a single HardwareSerial::write() is atomic w.r.t. the other task's writes.
+static void buf_append_escaped(char* buf, size_t bufsz, size_t* pos, const char* s, int len, int max) {
+    for(int i = 0; i < len && i < max && *pos + 1 < bufsz; i++) {
+        char c = s[i];
+        if(c == ',' || c == '\r' || c == '\n' || (uint8_t)c < 0x20) c = '.';
+        buf[(*pos)++] = c;
+    }
+}
+
+/**
+ * Append a printf-formatted field at buf[*pos], clamping to the buffer.
+ *
+ * snprintf() returns what it WOULD have written, so the natural-looking
+ * `pos += snprintf(buf + pos, sizeof(buf) - pos, ...)` overshoots `pos` past the
+ * buffer on truncation. The NEXT call then computes `sizeof(buf) - pos` as a
+ * size_t UNDERFLOW -- a huge length against an out-of-bounds pointer. Chained
+ * appends must never accumulate the raw return value; this clamps instead.
+ */
+static void buf_appendf(char* buf, size_t bufsz, size_t* pos, const char* fmt, ...) {
+    if(*pos + 1 >= bufsz) return; // no room for even one byte + NUL
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf + *pos, bufsz - *pos, fmt, ap);
+    va_end(ap);
+    if(n < 0) return; // encoding error
+    size_t avail = bufsz - *pos - 1;
+    *pos += ((size_t)n > avail) ? avail : (size_t)n;
+}
+
+// ---- B1: probe IE-fingerprint + sequence-number coalescer ----------------
+//
+// The whole OUI/SSID ladder collapses the day Flock randomizes the probe MAC.
+// The probe *body* is MAC-independent: the ordered set of tagged Information
+// Elements (supported rates, HT/VHT/HE caps, vendor-specific 0xDD OUI+type) is
+// baked into the WiFi SoC driver and can't be scrambled without breaking
+// 802.11. We hash that skeleton into a uint32 the Flipper compares against a
+// curated table. This is a device-CLASS / firmware-stack match, NOT a unique
+// device ID -- the Flipper reports it as a candidate class match only.
+//
+// We hash only the *skeleton* (tag id + length, plus the first OUI+type bytes
+// of vendor-specific IEs), never per-frame variable contents, so the same probe
+// template hashes identically regardless of the (possibly randomized) MAC.
+
+#define FNV1A_OFFSET 0x811c9dc5u
+#define FNV1A_PRIME 0x01000193u
+
+static inline uint32_t fnv1a_u8(uint32_t h, uint8_t b) {
+    return (h ^ b) * FNV1A_PRIME;
+}
+
+// FNV-1a over the IE skeleton of a probe request. `p` points at the frame body,
+// `len` is the body length (FCS already removed). Tagged params start at byte
+// 24 (probe request has no fixed params). For each IE we fold in (tag_id,
+// length); for vendor-specific (0xDD) we also fold in up to the first 5 bytes
+// (3-byte OUI + 1-2 type/subtype) -- enough to distinguish vendor IEs without
+// shipping their variable payloads. Returns 0 if there are no parseable IEs.
+static uint32_t ie_skeleton_hash(const uint8_t* p, int len) {
+    uint32_t h = FNV1A_OFFSET;
+    int off = 24; // tagged parameters begin here for a probe request
+    bool any = false;
+    while(off + 2 <= len) {
+        uint8_t tag = p[off];
+        uint8_t tlen = p[off + 1];
+        if(off + 2 + tlen > len) break; // truncated IE -> stop
+        h = fnv1a_u8(h, tag);
+        h = fnv1a_u8(h, tlen);
+        if(tag == 0xDD) { // vendor-specific: fold OUI + type (first 5 bytes)
+            int n = tlen < 5 ? tlen : 5;
+            for(int i = 0; i < n; i++) h = fnv1a_u8(h, p[off + 2 + i]);
+        }
+        any = true;
+        off += 2 + tlen;
+    }
+    return any ? h : 0;
+}
+
+// Sequence-number-run coalescer. A MAC-cycling Flock burst sprays many probes
+// from different (randomized) MACs but with a *contiguous* 802.11 sequence
+// number run -- the SoC's seq counter increments across the burst regardless of
+// the source address. We treat such a run as ONE logical sighting and suppress
+// the duplicates on the ESP side so they never flood the Flipper's 64-entry
+// table. Keyed on the IE-skeleton hash so unrelated traffic with nearby seq
+// numbers isn't merged.
+#define SEQ_RUN_GAP 4 // max seq-num step to still count as the same burst
+#define SEQ_RUN_MS 1500 // a run older than this is stale; start fresh
+static uint32_t g_seq_fp = 0; // IE hash of the current run (0 = none)
+static uint16_t g_seq_last = 0; // last 802.11 sequence number in the run
+static uint32_t g_seq_t = 0; // millis() of the last frame in the run
+
+// Returns true if this frame should be SUPPRESSED as a duplicate within an
+// in-progress MAC-cycling burst (same IE fingerprint, monotonic seq-num run).
+static bool seq_run_duplicate(uint32_t fp, uint16_t seq) {
+    if(fp == 0) return false; // no fingerprint -> can't coalesce
+    uint32_t now = millis();
+    bool fresh = (now - g_seq_t) <= SEQ_RUN_MS;
+    if(fresh && fp == g_seq_fp) {
+        uint16_t step = (uint16_t)(seq - g_seq_last); // wraps mod 4096 naturally
+        if(step != 0 && step <= SEQ_RUN_GAP) {
+            g_seq_last = seq; // extend the run, suppress this frame
+            g_seq_t = now;
+            return true;
+        }
+    }
+    // New run (or a gap too large / stale): this frame is the run's first
+    // sighting -> report it and start tracking from here.
+    g_seq_fp = fp;
+    g_seq_last = seq;
+    g_seq_t = now;
+    return false;
+}
+
+static void promisc_cb(void* buf, wifi_promiscuous_pkt_type_t type) {
+    if(type != WIFI_PKT_MGMT) return;
+    const wifi_promiscuous_pkt_t* pkt = (const wifi_promiscuous_pkt_t*)buf;
+    const uint8_t* p = pkt->payload;
+    // sig_len includes the 4-byte FCS; drop it so SSID bounds checks stay inside
+    // the actual frame body.
+    int len = pkt->rx_ctrl.sig_len;
+    if(len < 28) return;
+    len -= 4;
+
+    // Snapshot the channel now: the hopper may advance before we finish.
+    uint8_t frame_channel = g_channel;
+
+    g_frames++;
+
+    uint8_t subtype = (p[0] >> 4) & 0x0F;
+
+    // Active-attack rate sampling (counted on EVERY frame, before any Flock
+    // candidacy filtering): probe-request floods and beacon-spam (many distinct
+    // beaconing BSSIDs). Flushed/evaluated in the ~1 Hz status block.
+    if(subtype == 0x04) {
+        g_probe_reqs++; // probe request
+    } else if(subtype == 0x08) {
+        note_beacon_bssid(p + 16); // beacon: addr3 = BSSID
+    }
+
+    // Locator (Wi-Fi): track the strongest RSSI of any frame to/from the target
+    // MAC (addr1/2/3). loop() emits it as a throttled LOC line.
+    if(g_locate_kind == 'w') {
+        int r = pkt->rx_ctrl.rssi;
+        if(memcmp(p + 4, g_locate_mac, 6) == 0 || memcmp(p + 10, g_locate_mac, 6) == 0 ||
+           memcmp(p + 16, g_locate_mac, 6) == 0) {
+            if(r > g_locate_best) g_locate_best = r;
+        }
+    }
+
+    // Deauthentication (0x0C) / disassociation (0x0A) frames: a flood of these
+    // is the signature of a deauth attack or an evil-twin kicking clients off.
+    if(subtype == 0x0C || subtype == 0x0A) {
+        g_deauths++;
+        // Attribution: report the targeted BSSID (addr3) + channel, rate-limited
+        // so a heavy flood can't saturate the UART.
+        uint32_t now_da = millis();
+        if(now_da - g_last_da >= 250) {
+            g_last_da = now_da;
+            const uint8_t* b = p + 16; // addr3 = BSSID
+            Serial.printf(
+                "DA,%02x%02x%02x%02x%02x%02x,%u\n",
+                b[0], b[1], b[2], b[3], b[4], b[5], frame_channel);
+        }
+    }
+
+    char ftype = 'O';
+    const char* ssid = NULL;
+    int ssid_len = 0;
+
+    // Locate SSID element (tag 0) within tagged parameters.
+    int tag_off = -1;
+    if(subtype == 0x04) { // probe request
+        ftype = 'P';
+        tag_off = 24;
+    } else if(subtype == 0x08) { // beacon
+        ftype = 'B';
+        tag_off = 36;
+    } else if(subtype == 0x05) { // probe response
+        ftype = 'R';
+        tag_off = 36;
+    }
+    bool ssid_ie_found = false;
+    if(tag_off >= 0 && tag_off + 2 <= len && p[tag_off] == 0x00) {
+        ssid_ie_found = true;
+        ssid_len = p[tag_off + 1];
+        if(tag_off + 2 + ssid_len <= len) {
+            ssid = (const char*)(p + tag_off + 2);
+        } else {
+            // The IE claims more bytes than the frame holds -- a truncated or
+            // malformed capture. Retract the whole finding, don't just zero the
+            // length: leaving ssid_ie_found set made the all-NUL scan below pass
+            // vacuously (zero bytes to disagree with it) and every truncated
+            // frame got reported as a hidden network. A parse miss is not
+            // evidence of concealment.
+            ssid_ie_found = false;
+            ssid_len = 0;
+        }
+    }
+
+    // Hidden-SSID beaconing: an AP that advertises but withholds its name. Two
+    // encodings are legal and both appear in the wild -- a zero-length SSID IE,
+    // and a length-N IE of all NULs -- so test for both.
+    //
+    // Only meaningful for beacons and probe RESPONSES: those identify an AP. A
+    // probe REQUEST with no SSID is an ordinary wildcard scan from a client and
+    // says nothing about hiding. And we only claim "hidden" when the SSID IE was
+    // actually located: a parse miss is not evidence of concealment.
+    bool hidden = false;
+    if(ssid_ie_found && (subtype == 0x08 || subtype == 0x05)) {
+        hidden = true;
+        for(int i = 0; i < ssid_len; i++) {
+            if(ssid[i] != '\0') {
+                hidden = false;
+                break;
+            }
+        }
+    }
+
+    int s_score = ssid ? ssid_score(ssid, ssid_len) : 0;
+    bool oui_tx = oui_match(p + 10); // addr2 = transmitter
+    bool oui_rx = oui_match(p + 4); // addr1 = receiver (silent station)
+    bool is_probe = (ftype == 'P');
+    bool wildcard = is_probe && (ssid_len == 0); // broadcast/wildcard probe
+
+    int conf = 0;
+    if(s_score == 3)
+        conf = 3; // confirmed Flock SSID name
+    else if(oui_tx && wildcard)
+        conf = 2; // OUI + wildcard probe -> only "likely": FLOCK_OUIS includes shared
+                  // silicon-vendor ranges (e.g. Espressif), so any ESP32 device
+                  // probing hits this. Reserve conf=3 for an SSID-name / IE-fp match.
+    else if((oui_tx || oui_rx) && is_probe)
+        conf = 2; // OUI (sender or silent receiver) + probe behaviour
+    else if(s_score == 2)
+        conf = 2;
+    else if(oui_tx || oui_rx)
+        conf = 1; // OUI prefix only
+
+    if(conf == 0) return; // not a candidate; drop to keep UART quiet
+
+    // B1: fingerprint the probe body (MAC-independent device-class signature)
+    // and coalesce MAC-cycling bursts via the 802.11 sequence-number run, so a
+    // randomized-MAC spray collapses to one logical sighting before it can flood
+    // the Flipper's 64-entry table. Only probe requests carry a meaningful IE
+    // skeleton. The coalescer runs only on candidate frames so unrelated noise
+    // can't capture the run slot and suppress a real detection.
+    uint32_t ie_fp = 0;
+    if(is_probe) {
+        ie_fp = ie_skeleton_hash(p, len);
+        // 802.11 sequence control: bytes 22-23, seq number is the top 12 bits.
+        uint16_t seq = ((uint16_t)p[23] << 8 | p[22]) >> 4;
+        if(seq_run_duplicate(ie_fp, seq)) return; // duplicate in an active burst
+    }
+
+    g_hits++;
+    if(!g_scanning) return;
+
+    // Report the Flock device's MAC: the transmitter if it matched, else the
+    // silent receiver (addr1).
+    const uint8_t* mac = oui_tx ? (p + 10) : (oui_rx ? (p + 4) : (p + 10));
+
+    char macstr[13];
+    snprintf(
+        macstr,
+        sizeof(macstr),
+        "%02x%02x%02x%02x%02x%02x",
+        mac[0],
+        mac[1],
+        mac[2],
+        mac[3],
+        mac[4],
+        mac[5]);
+
+    // Build the whole D-line in one buffer + single write: promisc_cb runs in the WiFi
+    // task, so a multi-call line could be split on the UART by loop()'s status lines.
+    char line[160];
+    size_t pos =
+        snprintf(line, sizeof(line), "D,%s,%d,%u,%c,%d,", macstr, pkt->rx_ctrl.rssi, frame_channel, ftype, conf);
+    if(ssid && ssid_len > 0) buf_append_escaped(line, sizeof(line), &pos, ssid, ssid_len, 48);
+    // B1: trailing IE-fingerprint field (probe requests only). Older parsers
+    // ignore it; the Flipper matches it against a curated Flock IE-fp table.
+    if(ie_fp != 0) buf_appendf(line, sizeof(line), &pos, ",fp=%08x", ie_fp);
+    // Device class. Only emitted for the non-default (acoustic) case: absent
+    // means ALPR, so the wire stays unchanged for every existing detection and
+    // an older Flipper build just ignores the token.
+    if(st_oui_match(mac)) buf_appendf(line, sizeof(line), &pos, ",cls=a");
+    // Hidden-SSID attribute. Rides on a line we were already sending, so it adds
+    // no UART traffic and needs no per-BSSID dedup of its own. Reported, NOT
+    // scored: see the note in helpers/esp_parser.c.
+    if(hidden) buf_appendf(line, sizeof(line), &pos, ",hid=1");
+    if(pos > sizeof(line) - 1) pos = sizeof(line) - 1;
+    line[pos++] = '\n';
+    Serial.write((const uint8_t*)line, pos);
+}
+
+static void set_channel(uint8_t ch) {
+    g_channel = ch;
+    esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+}
+
+static void start_promisc() {
+    wifi_promiscuous_filter_t filter = {.filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT};
+    esp_wifi_set_promiscuous_filter(&filter);
+    esp_wifi_set_promiscuous_rx_cb(&promisc_cb);
+    esp_wifi_set_promiscuous(true);
+    set_channel(g_channel);
+}
+
+static void banner() {
+    Serial.print("FLOCKCO,1\n");
+    // What this chip actually is, so the app stops offering a classic ESP32's
+    // pinout on every board. Sent as its own line rather than appended to the
+    // banner: an older app ignores lines it does not know, but a changed banner
+    // would trip its wire-protocol version check.
+    //   CHIP,<target>,<gpio_count>,<usable_gps_pin_mask_hi>,<lo>,<has5g>
+    uint64_t m = gps_usable_mask();
+    Serial.printf(
+        "CHIP,%s,%d,%08lx,%08lx,%d\n",
+        CONFIG_IDF_TARGET,
+        (int)SOC_GPIO_PIN_COUNT,
+        (unsigned long)(m >> 32),
+        (unsigned long)(m & 0xFFFFFFFFULL),
+        FLOCK_HAS_5GHZ);
+}
+
+// One-shot WiFi security scan for the FlipDeFlock audit. Switches out of
+// promiscuous Flock mode, runs an active esp_wifi_scan (which yields the auth
+// mode + ciphers + WPS that Marauder never emits over serial), streams one
+// "W," line per AP, then restores Flock promiscuous mode.
+//   W,<bssid>,<rssi>,<ch>,<authmode>,<pairwise>,<group>,<wps>,<ssid>
+static void wifi_security_scan() {
+    esp_wifi_set_promiscuous(false);
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    esp_wifi_start();
+
+    wifi_scan_config_t sc = {};
+    sc.show_hidden = true;
+    sc.scan_type = WIFI_SCAN_TYPE_ACTIVE;
+
+    Serial.print("WBEGIN\n");
+    uint16_t num = 0;
+    if(esp_wifi_scan_start(&sc, true) == ESP_OK) {
+        esp_wifi_scan_get_ap_num(&num);
+        if(num > 64) num = 64;
+        wifi_ap_record_t* recs =
+            (wifi_ap_record_t*)malloc(sizeof(wifi_ap_record_t) * (num ? num : 1));
+        if(recs) {
+            uint16_t got = num;
+            if(esp_wifi_scan_get_ap_records(&got, recs) == ESP_OK) {
+                for(uint16_t i = 0; i < got; i++) {
+                    wifi_ap_record_t* r = &recs[i];
+                    char bss[13];
+                    snprintf(
+                        bss,
+                        sizeof(bss),
+                        "%02x%02x%02x%02x%02x%02x",
+                        r->bssid[0], r->bssid[1], r->bssid[2],
+                        r->bssid[3], r->bssid[4], r->bssid[5]);
+                    char line[160];
+                    size_t pos = snprintf(
+                        line, sizeof(line), "W,%s,%d,%u,%d,%d,%d,%d,",
+                        bss, r->rssi, r->primary, (int)r->authmode,
+                        (int)r->pairwise_cipher, (int)r->group_cipher, r->wps ? 1 : 0);
+                    const char* s = (const char*)r->ssid;
+                    int sl = 0;
+                    while(sl < 32 && s[sl]) sl++; // r->ssid is NUL-terminated
+                    buf_append_escaped(line, sizeof(line), &pos, s, sl, 32);
+                    if(pos > sizeof(line) - 1) pos = sizeof(line) - 1;
+                    line[pos++] = '\n';
+                    Serial.write((const uint8_t*)line, pos);
+                }
+            }
+            free(recs);
+        }
+    }
+    Serial.printf("WEND,%u\n", num);
+
+    // Back to Flock detection.
+    esp_wifi_set_mode(WIFI_MODE_NULL);
+    start_promisc();
+}
+
+// One-shot BLE scan for the anti-tracker / BLE-Flock feature. Stops WiFi to free
+// the radio, active-scans a few seconds, classifies each device, then restores
+// WiFi/Flock mode.
+//   BLE,<addr>,<rssi>,<cat>,<company>,<name>[,<mfghex>][,rv=1]
+//   cat: 0 unknown  1 Flock/Raven  2 AirTag/FindMy  3 Tile  4 SmartTag
+//   mfghex: raw manufacturer-specific data as hex (Flock 0x09C8 only), so the
+//   Flipper can decode the device serial; trailing field, older parsers ignore.
+//   rv=1: device exposed a Raven-specific GATT service (0x3100-0x3500) -> a
+//   positive Raven (acoustic sensor) ID. Emitted AFTER mfghex when both apply;
+//   contains '=' so the Flipper tells it apart from mfghex. Older parsers ignore.
+static void ble_ensure_init() {
+    if(g_ble_inited) return;
+    BLEDevice::init("");
+    g_ble = BLEDevice::getScan();
+    g_ble->setActiveScan(true);
+    g_ble->setInterval(80); // interval > window so BLE doesn't hog the radio
+    g_ble->setWindow(60);
+    g_ble_inited = true;
+}
+
+// Serialised BLE scan: toggles WiFi promiscuous OFF for the scan, then back ON
+// (BLE stays resident). Classifies Flock/Raven by mfg id 0x09C8, device name
+// (Penguin* / FS Ext Battery), Raven custom service UUIDs (0x3100-0x3500), or a
+// Flock OUI on the BLE address; plus AirTag/Tile/SmartTag. Emits BBEGIN/BLE/BEND.
+static void ble_do_scan(int seconds) {
+    ble_ensure_init();
+    esp_wifi_set_promiscuous(false);
+
+    Serial.print("BBEGIN\n");
+    if(seconds < 1) seconds = 1;
+
+    // Run the scan as 1-second slices, draining the GPS between each.
+    //
+    // BLEScan::start() blocks, so one 3 s call also stops loop() for 3 s -- and
+    // loop() is what empties Serial1. At 9600 baud that is ~2.9 KB of NMEA
+    // arriving against the RX buffer, so sentences were dropped outright; even
+    // the survivors left the fix up to ~4 s old. At 50 km/h a 4 s old fix
+    // geotags a camera ~55 m from where it really is, which is worse than
+    // useless on a DeFlock submission.
+    //
+    // is_continue = true keeps the library's accumulated results, so total
+    // dwell, dedup and the reported device list are preserved. Not quite free:
+    // each slice restarts GAP scanning, so a few milliseconds of advert time is
+    // lost per boundary (two boundaries at the default 3 s). BLE advertisers
+    // repeat every 20-100 ms, so that is far below the noise floor of whether a
+    // given device is seen at all -- and a fix that is 1 s old instead of 4 s is
+    // worth much more than those milliseconds.
+    //
+    // 1 s is the floor because start() takes whole seconds.
+    for(int i = 0; i < seconds - 1; i++) {
+        FLOCK_SCAN_CONT(g_ble, 1, i > 0);
+        gps_poll();
+    }
+    // Last slice returns the accumulated results. is_continue only when earlier
+    // slices actually ran, so a 1-second scan still starts from a clean list.
+    BLEScanResults found = FLOCK_SCAN_CONT(g_ble, 1, seconds > 1);
+    gps_poll();
+    int count = found.getCount();
+    if(count > 80) count = 80;
+    int spam = 0; // impersonation/pairing adverts -> BLE-spam flood indicator
+    for(int i = 0; i < count; i++) {
+        BLEAdvertisedDevice d = found.getDevice(i);
+
+        int company = -1;
+        int cat = 0;
+        // raven: set when this device exposes a Raven-specific GATT service
+        // (0x3100-0x3500). Tracked separately from cat because cat=1 also covers
+        // the shared battery / Penguin / OUI cases -- only the GATT match is a
+        // positive Raven (acoustic) ID, so we surface it as its own rv=1 field.
+        bool raven = false;
+        if(d.haveManufacturerData()) {
+            std::string md = fstr(d.getManufacturerData());
+            if(md.length() >= 2) company = (uint8_t)md[0] | ((uint8_t)md[1] << 8);
+            if(company == 0x09C8)
+                cat = 1; // Flock Safety / Raven
+            else if(company == 0x004C && md.length() >= 3 && (uint8_t)md[2] == 0x12)
+                cat = 2; // Apple Find My / AirTag
+        }
+        if(cat != 1 && d.haveName()) {
+            std::string nm = fstr(d.getName());
+            if(nm.rfind("Penguin", 0) == 0 || nm.find("FS Ext") != std::string::npos)
+                cat = 1; // Flock Penguin battery / FS external battery
+        }
+        if(d.haveServiceUUID()) {
+            std::string u = fstr(d.getServiceUUID().toString());
+            if(u.find("00003100") != std::string::npos || u.find("00003200") != std::string::npos ||
+               u.find("00003300") != std::string::npos || u.find("00003400") != std::string::npos ||
+               u.find("00003500") != std::string::npos) {
+                cat = 1; // Raven custom GATT services
+                raven = true; // Raven-specific GATT -> positive acoustic-sensor ID
+            }
+            else if(cat == 0 && (u.find("feed") != std::string::npos || u.find("feec") != std::string::npos))
+                cat = 3; // Tile
+            else if(cat == 0 && u.find("fd5a") != std::string::npos)
+                cat = 4; // Samsung SmartTag
+            else if(cat == 0 && u.find("feaa") != std::string::npos)
+                cat = 5; // Google Find My Device network (Pebblebee/Chipolo/Moto/Eufy)
+        }
+        if(cat == 0) {
+            BLEAddress ba = d.getAddress();
+            const uint8_t* nat = fble_addr_bytes(ba); // shape differs 2.x vs 3.x
+            if(nat && oui_match(nat)) cat = 1; // Flock OUI on the BLE address
+        }
+
+        // Apple/Tile/Samsung/Google pairing adverts are what BLE-spam tools
+        // (Flipper "BLE spam", ESP32 sour-apple, etc.) impersonate in bulk. A few
+        // are normal; a flood of them in one scan is the spam signature.
+        if(cat == 2 || cat == 3 || cat == 4 || cat == 5) spam++;
+
+        std::string a = fstr(d.getAddress().toString());
+        char addr[13];
+        int k = 0;
+        for(size_t j = 0; j < a.size() && k < 12; j++) {
+            if(a[j] != ':') addr[k++] = a[j];
+        }
+        addr[k] = 0;
+
+        // One buffer + single write (same rationale as the D-line) so the multi-field
+        // BLE line is emitted atomically.
+        char line[176];
+        size_t pos =
+            snprintf(line, sizeof(line), "BLE,%s,%d,%d,%d,", addr, d.getRSSI(), cat, company);
+        if(d.haveName()) {
+            std::string nm = fstr(d.getName());
+            buf_append_escaped(line, sizeof(line), &pos, nm.c_str(), (int)nm.size(), 32);
+        }
+        // Trailing field: raw mfg-data hex for Flock (0x09C8) only, so the
+        // Flipper can decode the device serial. Capped so the line stays well
+        // under the Flipper's RX line limit; only Flock units carry it.
+        if(cat == 1 && company == 0x09C8 && d.haveManufacturerData()) {
+            std::string md = fstr(d.getManufacturerData());
+            if(pos + 1 < sizeof(line)) line[pos++] = ',';
+            for(size_t j = 0; j < md.length() && j < 31 && pos + 2 < sizeof(line); j++) {
+                buf_appendf(line, sizeof(line), &pos, "%02x", (uint8_t)md[j]);
+            }
+        }
+        // Raven GATT flag, emitted LAST so it follows the optional mfghex field.
+        // The '=' lets the Flipper distinguish it from the pure-hex mfghex token.
+        if(raven && pos + 5 < sizeof(line)) {
+            memcpy(line + pos, ",rv=1", 5);
+            pos += 5;
+        }
+        if(pos > sizeof(line) - 1) pos = sizeof(line) - 1;
+        line[pos++] = '\n';
+        Serial.write((const uint8_t*)line, pos);
+    }
+    Serial.printf("BEND,%d\n", count);
+
+    // A bulk of impersonation/pairing adverts in a single scan = a BLE-spam
+    // flood (independent BLE radio class for the app's fused score).
+    if(spam >= BLE_SPAM_MIN) Serial.printf("ATK,blespam,%d\n", spam);
+
+    g_ble->clearResults();
+    esp_wifi_set_promiscuous(true);
+    set_channel(g_channel);
+}
+
+// Locator (BLE): one short scan; emit the target's RSSI if seen. Builds the same
+// lowercased, colon-stripped toString() form the BLE line uses, so the comparison
+// is byte-order-safe against the addr the app originally parsed.
+static void ble_locate_scan() {
+    ble_ensure_init();
+    esp_wifi_set_promiscuous(false);
+    BLEScanResults res = FLOCK_SCAN(g_ble, 1);
+    int best = -127;
+    int n = res.getCount();
+    for(int i = 0; i < n; i++) {
+        BLEAdvertisedDevice d = res.getDevice(i);
+        std::string a = fstr(d.getAddress().toString());
+        char addr[13];
+        int k = 0;
+        for(size_t j = 0; j < a.size() && k < 12; j++) {
+            char c = a[j];
+            if(c == ':') continue;
+            addr[k++] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+        }
+        addr[k] = 0;
+        if(strcmp(addr, g_locate_macs) == 0) {
+            int r = d.getRSSI();
+            if(r > best) best = r;
+        }
+    }
+    g_ble->clearResults();
+    if(best > -127) Serial.printf("LOC,%d\n", best);
+}
+
+// ---- optional GPS relay (FlipDeFlock issue #5) ---------------------------
+//
+// Some carrier boards wire a GPS module to the ESP32 instead of to the Flipper's
+// header. The Flipper then cannot see it on ANY pin setting, because the NMEA
+// never reaches its GPIO. When switched on, read the module here and relay the
+// sentences the Flipper's parser understands as `G,<sentence>` lines.
+//
+// OFF unless the app asks for it (`gps <rx> [baud]`): Serial1's pins differ per
+// board and per chip, so a wrong guess would just spray a dead pin's noise onto
+// a link that carries detections.
+//
+// Deliberately NOT parsed here. The Flipper already has a host-tested NMEA
+// parser used by its own UART path; relaying raw sentences means one parser, one
+// set of lock-loss semantics, and no duplicated coordinate maths on the ESP.
+#define GPS_LINE_MAX 100 // NMEA caps a sentence at 82 incl. CRLF; headroom
+// Sized for the worst configured baud, not the common one. The app offers up to
+// 115200, and a 10 Hz receiver at that rate emits on the order of 6 KB/s. loop()
+// now drains between 1-second BLE slices rather than being stalled for a whole
+// 3-second scan, so one slice is the window this has to cover: 8 KB gives
+// headroom over that with room for a scheduling hiccup. It is ~3% of the free
+// heap the sketch reports, which is a cheap way to make dropped sentences a
+// non-event instead of a silent position error.
+#define GPS_RX_BUF   8192
+
+/* ---- which pins can carry a GPS on THIS chip -------------------------------
+ *
+ * Every bound below comes from the IDF's own per-target headers. Nothing here is
+ * a hardcoded pin number, deliberately: the previous guard was
+ * `rx > 0 && rx != 1 && rx != 3 && rx < 48`, which is the classic ESP32's
+ * pinout written as if it were universal. On an ESP32-C5 that is wrong three
+ * separate ways, and the failure modes get worse as they go:
+ *
+ *   - GPIO32..35 were offered by the app and do not exist (C5 stops at 28).
+ *   - GPIO16..22 are the flash/PSRAM bus. A C5-WROOM-1-MDN8R8 has 8 MB of each,
+ *     so they are genuinely occupied. This is what a user was told to use.
+ *   - UART0 is GPIO11/12 on a C5, NOT 1/3. So the one thing the guard existed to
+ *     prevent -- taking the link to the Flipper and cutting the board off, which
+ *     needs a recovery flash to undo -- was exactly what it failed to prevent.
+ *
+ * Deriving the bounds from the SOC_, SPI_IOMUX_ and U0xxD_GPIO_NUM macros means
+ * this is automatically correct on parts nobody here has ever held.
+ */
+// The contiguous span the flash bus occupies. Folding min..max over the six
+// IOMUX pins rather than testing each one also covers the PSRAM lines, which
+// share this bus on parts that have both and are not exposed as their own
+// macros. All six exist on every target (verified against esp32/s2/s3/c3), and
+// the span is contiguous on each: esp32 6-11, s2/s3 27-32, c3 12-17.
+//
+// constexpr, not nested ternary macros: the first attempt at this folded only
+// five of the six and silently stopped the span at GPIO10, leaving the flash CS
+// pin offered as a valid GPS input. The static_asserts below caught it.
+static constexpr int flock_min_i(int a, int b) {
+    return a < b ? a : b;
+}
+static constexpr int flock_max_i(int a, int b) {
+    return a > b ? a : b;
+}
+// The flash-bus pin macros were RENAMED between IDF 4.x and 5.x: core 2.x calls
+// them SPI_IOMUX_PIN_NUM_*, core 3.x calls the memory-SPI bus MSPI_IOMUX_PIN_NUM_*
+// and reuses the bare SPI_ prefix for the general-purpose controllers. Building
+// against only one spelling compiles on one core and fails on the other, which is
+// exactly what the core-3.x compat job exists to catch -- and did.
+#if defined(MSPI_IOMUX_PIN_NUM_CLK)
+#define FLOCK_F_CLK  MSPI_IOMUX_PIN_NUM_CLK
+#define FLOCK_F_MISO MSPI_IOMUX_PIN_NUM_MISO
+#define FLOCK_F_MOSI MSPI_IOMUX_PIN_NUM_MOSI
+#define FLOCK_F_HD   MSPI_IOMUX_PIN_NUM_HD
+#define FLOCK_F_WP   MSPI_IOMUX_PIN_NUM_WP
+// ...and the chip-select is CS0 on some core-3.x targets, bare CS on others.
+#if defined(MSPI_IOMUX_PIN_NUM_CS0)
+#define FLOCK_F_CS MSPI_IOMUX_PIN_NUM_CS0
+#else
+#define FLOCK_F_CS MSPI_IOMUX_PIN_NUM_CS
+#endif
+#elif defined(SPI_IOMUX_PIN_NUM_CLK)
+#define FLOCK_F_CLK  SPI_IOMUX_PIN_NUM_CLK
+#define FLOCK_F_MISO SPI_IOMUX_PIN_NUM_MISO
+#define FLOCK_F_MOSI SPI_IOMUX_PIN_NUM_MOSI
+#define FLOCK_F_HD   SPI_IOMUX_PIN_NUM_HD
+#define FLOCK_F_WP   SPI_IOMUX_PIN_NUM_WP
+#define FLOCK_F_CS   SPI_IOMUX_PIN_NUM_CS
+#else
+#error "No flash IOMUX pin macros for this IDF -- the GPS pin guard cannot be derived"
+#endif
+
+static constexpr int FLOCK_FLASH_LO = flock_min_i(
+    flock_min_i(flock_min_i(FLOCK_F_CLK, FLOCK_F_MISO), FLOCK_F_MOSI),
+    flock_min_i(flock_min_i(FLOCK_F_HD, FLOCK_F_WP), FLOCK_F_CS));
+static constexpr int FLOCK_FLASH_HI = flock_max_i(
+    flock_max_i(flock_max_i(FLOCK_F_CLK, FLOCK_F_MISO), FLOCK_F_MOSI),
+    flock_max_i(flock_max_i(FLOCK_F_HD, FLOCK_F_WP), FLOCK_F_CS));
+
+/* These pin down the two things above that are easy to get quietly wrong: that
+ * the MIN5/MAX5 folding actually yields the flash span, and that the per-target
+ * headers hold the values the datasheets say they do.
+ *
+ * The C5 block matters most, because NOBODY ON THIS PROJECT HAS A C5. Its
+ * numbers come from Espressif's docs (GPIO0-28; UART0 on GPIO11/12; GPIO16-22
+ * the flash/PSRAM bus) and are asserted here so CI, which does build the C5,
+ * fails loudly if the research was wrong -- rather than shipping a guard that
+ * refuses the wrong pins to the one person actually testing on that chip.
+ */
+#if defined(CONFIG_IDF_TARGET_ESP32)
+static_assert(SOC_GPIO_PIN_COUNT == 40, "classic ESP32 has GPIO0-39");
+static_assert(U0TXD_GPIO_NUM == 1 && U0RXD_GPIO_NUM == 3, "classic ESP32 UART0 is GPIO1/3");
+static_assert(FLOCK_FLASH_LO == 6 && FLOCK_FLASH_HI == 11, "classic ESP32 flash is GPIO6-11");
+#elif defined(CONFIG_IDF_TARGET_ESP32C5)
+static_assert(SOC_GPIO_PIN_COUNT == 29, "ESP32-C5 has GPIO0-28");
+static_assert(U0TXD_GPIO_NUM == 11 && U0RXD_GPIO_NUM == 12, "ESP32-C5 UART0 is GPIO11/12");
+static_assert(FLOCK_FLASH_LO >= 16 && FLOCK_FLASH_HI <= 22, "ESP32-C5 flash/PSRAM is GPIO16-22");
+#endif
+
+/**
+ * Why this pin cannot carry a GPS, or NULL if it can.
+ * The string is echoed to the operator, because "refused" without "why" is what
+ * made the last round of this take four attempts to diagnose.
+ */
+static const char* gps_pin_reject(int rx) {
+    if(rx < 0 || rx >= SOC_GPIO_PIN_COUNT) return "no such pin on this chip";
+    if(!((1ULL << rx) & SOC_GPIO_VALID_GPIO_MASK)) return "not a usable GPIO";
+    if(rx == U0TXD_GPIO_NUM || rx == U0RXD_GPIO_NUM) return "carries the Flipper link";
+    if(rx >= FLOCK_FLASH_LO && rx <= FLOCK_FLASH_HI) return "flash/PSRAM bus";
+    return NULL;
+}
+
+/** Bitmask of pins gps_pin_reject() accepts. Sent to the app so its picker can
+ *  offer this chip's real pins instead of a hardcoded classic-ESP32 list. */
+static uint64_t gps_usable_mask() {
+    uint64_t m = 0;
+    for(int i = 0; i < SOC_GPIO_PIN_COUNT && i < 64; i++) {
+        if(!gps_pin_reject(i)) m |= (1ULL << i);
+    }
+    return m;
+}
+
+static bool g_gps_on = false;
+static int g_gps_rx = -1;
+static uint32_t g_gps_baud = 9600;
+static char g_gps_line[GPS_LINE_MAX];
+static size_t g_gps_len = 0;
+
+// Only the three sentence types the Flipper decodes (RMC / GGA / GLL). Filtering
+// on this side keeps GSV/GSA/VTG chatter off a UART shared with detection lines
+// -- a talkative receiver emits well over a dozen sentences per fix.
+static bool gps_wanted(const char* s, size_t n) {
+    if(n < 6 || s[0] != '$') return false;
+    const char* t = s + 3; // '$' + 2-char talker (GP / GN / GL / GA / BD ...)
+    return strncmp(t, "RMC", 3) == 0 || strncmp(t, "GGA", 3) == 0 || strncmp(t, "GLL", 3) == 0;
+}
+
+static void gps_relay_line() {
+    if(!gps_wanted(g_gps_line, g_gps_len)) return;
+    char out[GPS_LINE_MAX + 4];
+    size_t pos = 0;
+    out[pos++] = 'G';
+    out[pos++] = ',';
+    // Copy printable ASCII only. Commas and '$'/'*' MUST survive (they are the
+    // sentence), so buf_append_escaped() is wrong here -- it maps ',' to '.'.
+    // Anything outside printable ASCII is dropped rather than substituted: a
+    // stray CR/LF would split the line and desync the Flipper's framing.
+    for(size_t i = 0; i < g_gps_len && pos + 2 < sizeof(out); i++) {
+        uint8_t c = (uint8_t)g_gps_line[i];
+        if(c < 0x20 || c > 0x7E) continue;
+        out[pos++] = (char)c;
+    }
+    out[pos++] = '\n';
+    Serial.write((const uint8_t*)out, pos); // single write: atomic vs the WiFi task
+}
+
+static void gps_poll() {
+    if(!g_gps_on) return;
+    // Drain everything buffered, but emit at most ONE sentence of each type per
+    // pass -- the newest.
+    //
+    // Only the current position matters, and the Flipper's parser ends up in the
+    // same state either way: it applies sentences in order, so the last one wins.
+    // Relaying a whole backlog instead would burn the Flipper's UART on
+    // already-superseded fixes, competing with detection lines for the same link
+    // at the exact moment a scan phase just ended and hits are being reported.
+    //
+    // Keeps the lock-loss semantics intact: "newest wins" is what the direct UART
+    // path effectively does too, so a valid -> invalid transition still clears the
+    // fix rather than being coalesced away.
+    char last[3][GPS_LINE_MAX];
+    size_t last_len[3] = {0, 0, 0};
+    int budget = 4096; // generous: this runs once per pass, not per byte of link
+    while(g_gps_on && Serial1.available() && budget-- > 0) {
+        char c = (char)Serial1.read();
+        if(c == '\n' || c == '\r') {
+            if(g_gps_len && gps_wanted(g_gps_line, g_gps_len)) {
+                // Bucket by sentence type so an RMC cannot displace a GGA: the
+                // two carry different fields (course/validity vs satellites).
+                const char* t = g_gps_line + 3;
+                int slot = (strncmp(t, "RMC", 3) == 0) ? 0 : (strncmp(t, "GGA", 3) == 0) ? 1 : 2;
+                memcpy(last[slot], g_gps_line, g_gps_len);
+                last_len[slot] = g_gps_len;
+            }
+            g_gps_len = 0;
+        } else if(g_gps_len + 1 < sizeof(g_gps_line)) {
+            g_gps_line[g_gps_len++] = c;
+        } else {
+            // Overlong: drop the whole thing. Emitting a truncated sentence
+            // would fail the Flipper's checksum check anyway, and a sentence
+            // without its '*hh' could be parsed as a WRONG fix.
+            g_gps_len = 0;
+        }
+    }
+    // GGA first so the satellite count is in place before RMC's position/course.
+    static const int order[3] = {1, 0, 2};
+    for(int i = 0; i < 3; i++) {
+        int slot = order[i];
+        if(!last_len[slot]) continue;
+        memcpy(g_gps_line, last[slot], last_len[slot]);
+        g_gps_len = last_len[slot];
+        gps_relay_line();
+        g_gps_len = 0;
+    }
+}
+
+// `gps off` | `gps <rx_pin> [baud]`. Echoes GPSCFG either way so a user hunting
+// for their board's pin can confirm from a plain serial terminal. The Flipper
+// ignores unknown lines, so the echo is safe on a live link.
+static void gps_configure(int rx, uint32_t baud) {
+    if(g_gps_on) {
+        Serial1.end();
+        g_gps_on = false;
+    }
+    g_gps_len = 0;
+    if(rx >= 0) {
+        g_gps_rx = rx;
+        g_gps_baud = baud;
+        Serial1.setRxBufferSize(GPS_RX_BUF);
+        // RX only: we never talk to the receiver, so TX stays unassigned rather
+        // than claiming a second pin the board may be using for something else.
+        Serial1.begin(g_gps_baud, SERIAL_8N1, g_gps_rx, -1);
+        g_gps_on = true;
+    }
+    Serial.printf("GPSCFG,%d,%d,%lu\n", g_gps_on ? 1 : 0, g_gps_rx, (unsigned long)g_gps_baud);
+}
+
+void setup() {
+    Serial.begin(115200);
+    // Short RX timeout so loop()'s readStringUntil('\n') can't stall channel-hop /
+    // heartbeat for the default 1 s when a command arrives without a trailing newline.
+    Serial.setTimeout(20);
+    delay(200);
+
+    nvs_flash_init();
+    esp_event_loop_create_default();
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    esp_wifi_init(&cfg);
+    esp_wifi_set_storage(WIFI_STORAGE_RAM);
+    esp_wifi_set_mode(WIFI_MODE_NULL);
+    esp_wifi_start();
+#if FLOCK_HAS_5GHZ
+    // AUTO = 2.4 + 5. Must be set before hopping: with the default 2.4-only mode
+    // a 5 GHz set_channel() is rejected and the sweep silently covers half of
+    // what it reports. Non-fatal if it fails -- hop_channel() still yields valid
+    // 2.4 GHz channels, so the companion degrades to the classic behaviour
+    // instead of scanning nothing.
+    if(esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO) != ESP_OK) {
+        g_band = FlockBand2G;
+    }
+#endif
+    start_promisc();
+
+    banner();
+}
+
+static void handle_command(String cmd) {
+    cmd.trim();
+    // Any non-locate command ends Locator mode: unlock the Wi-Fi channel it
+    // pinned, and restore promiscuous if BLE-locate had turned it off.
+    if(!cmd.startsWith("locate")) {
+        if(g_locate_kind == 'w') g_lock_channel = 0;
+        if(g_locate_kind == 'b') {
+            esp_wifi_set_promiscuous(true);
+            set_channel(g_channel);
+        }
+        g_locate_kind = 0;
+    }
+    if(cmd.startsWith("gps")) {
+        // gps            -> report current state
+        // gps off        -> stop relaying, release Serial1
+        // gps <rx> [baud]-> relay NMEA from that RX pin (default 9600)
+        String a = cmd.substring(3);
+        a.trim();
+        if(a.length() == 0) {
+            Serial.printf(
+                "GPSCFG,%d,%d,%lu\n", g_gps_on ? 1 : 0, g_gps_rx, (unsigned long)g_gps_baud);
+        } else if(a == "off") {
+            gps_configure(-1, g_gps_baud);
+        } else {
+            int sp = a.indexOf(' ');
+            int rx = (sp < 0 ? a : a.substring(0, sp)).toInt();
+            uint32_t baud = 9600;
+            if(sp >= 0) {
+                long b = a.substring(sp + 1).toInt();
+                if(b >= 1200 && b <= 921600) baud = (uint32_t)b;
+            }
+            // Ask the chip, don't assume the pinout. gps_pin_reject() is derived
+            // entirely from this target's own IDF headers, so the pins it refuses
+            // are this board's real flash bus and this board's real UART0 -- not
+            // the classic ESP32's, which is what the old literal test encoded.
+            const char* why = gps_pin_reject(rx);
+            if(!why) {
+                gps_configure(rx, baud);
+            } else {
+                Serial.printf("GPSCFG,0,%d,%lu\n", rx, (unsigned long)baud);
+                Serial.printf("GPSERR,%d,%s\n", rx, why);
+            }
+        }
+        return; // not a scan-mode command
+    }
+    if(cmd == "scan") {
+        g_scanning = true;
+        g_combo = false; // pure WiFi Flock
+    } else if(cmd == "stop") {
+        g_scanning = false;
+        g_combo = false; // also leave dual-band mode so the board goes idle
+    } else if(cmd == "ver") {
+        banner();
+    } else if(cmd == "wifiscan") {
+        wifi_security_scan();
+    } else if(cmd == "blescan") {
+        ble_do_scan(6);
+    } else if(cmd == "flockcombo") {
+        g_scanning = true;
+        g_combo = true; // interleaved WiFi + BLE Flock detection
+        g_phase_start = millis();
+    } else if(cmd == "flockwifi") {
+        g_combo = false;
+    } else if(cmd.startsWith("ch ")) {
+        int n = cmd.substring(3).toInt();
+        // 1-14 are 2.4 GHz; 36-177 are the 5 GHz channels (C5 only). Anything
+        // else, including 0, means "resume hopping".
+        bool ok_24 = (n >= 1 && n <= 14);
+        bool ok_5 = false;
+#if FLOCK_HAS_5GHZ
+        for(size_t i = 0; i < CHANNELS_5G_COUNT; i++) {
+            if(n == CHANNELS_5G[i]) {
+                ok_5 = true;
+                break;
+            }
+        }
+#endif
+        if(ok_24 || ok_5) {
+            g_lock_channel = (uint8_t)n;
+            set_channel((uint8_t)n);
+        } else {
+            g_lock_channel = 0;
+        }
+    } else if(cmd.startsWith("band")) {
+        // band 2g|5g|all -- pick which band(s) the hopper sweeps.
+        // Always ACKs with the band actually in force, which on a 2.4-only chip
+        // is 2g whatever was asked: silently accepting "5g" on a radio that has
+        // no 5 GHz would report coverage that does not exist.
+        String a = cmd.substring(4);
+        a.trim();
+#if FLOCK_HAS_5GHZ
+        if(a == "5g")
+            g_band = FlockBand5G;
+        else if(a == "all")
+            g_band = FlockBandAll;
+        else if(a == "2g")
+            g_band = FlockBand2G;
+#else
+        g_band = FlockBand2G;
+#endif
+        g_hop_i = 0;
+        g_lock_channel = 0;
+        set_channel(hop_channel(0));
+        Serial.printf(
+            "BAND,%s,%u\n",
+            (g_band == FlockBand5G) ? "5g" : ((g_band == FlockBandAll) ? "all" : "2g"),
+            (unsigned)hop_count());
+    } else if(cmd.startsWith("locate")) {
+        // locate <w|b> <hexmac> [ch]   -> stream LOC,<rssi> for that target
+        // locate off                   -> stop
+        if(cmd.indexOf("off") > 0) {
+            if(g_locate_kind == 'b') {
+                esp_wifi_set_promiscuous(true);
+                set_channel(g_channel);
+            }
+            g_locate_kind = 0;
+            g_lock_channel = 0;
+        } else {
+            int s1 = cmd.indexOf(' ');
+            int s2 = (s1 > 0) ? cmd.indexOf(' ', s1 + 1) : -1;
+            int s3 = (s2 > 0) ? cmd.indexOf(' ', s2 + 1) : -1;
+            if(s1 > 0 && s2 > s1) {
+                char kind = cmd.charAt(s1 + 1);
+                String macs = (s3 > s2) ? cmd.substring(s2 + 1, s3) : cmd.substring(s2 + 1);
+                macs.toLowerCase();
+                uint8_t mac[6];
+                if(macs.length() >= 12 && parse_hexmac(macs.c_str(), mac)) {
+                    // promisc_cb() memcmp's g_locate_mac from the WiFi task, so a
+                    // plain memcpy here can be observed half-applied and the
+                    // Locator homes on a spliced old/new address. Swap the target
+                    // and arm g_locate_kind together, under the lock -- kind is
+                    // what gates the compare, so publishing it last inside the
+                    // same section makes the whole target visible atomically.
+                    portENTER_CRITICAL(&g_mux);
+                    memcpy(g_locate_mac, mac, 6);
+                    strncpy(g_locate_macs, macs.c_str(), 12);
+                    g_locate_macs[12] = 0;
+                    g_locate_kind = (kind == 'b') ? 'b' : 'w';
+                    portEXIT_CRITICAL(&g_mux);
+                    g_locate_ch = (s3 > s2) ? (uint8_t)cmd.substring(s3 + 1).toInt() : 0;
+                    g_locate_best = -127;
+                    g_scanning = false; // Locator dedicates the radio to one target
+                    g_combo = false;
+                    if(g_locate_kind == 'w') {
+                        esp_wifi_set_promiscuous(true);
+                        if(g_locate_ch >= 1 && g_locate_ch <= 14) {
+                            g_lock_channel = g_locate_ch;
+                            set_channel(g_locate_ch);
+                        } else {
+                            g_lock_channel = 0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+void loop() {
+    if(Serial.available()) {
+        handle_command(Serial.readStringUntil('\n'));
+    }
+
+    // Before every early return below: a fix must keep flowing in Locator mode
+    // and while idle, or detections geotag with a stale position (or none).
+    // The blocking BLE scans drain the GPS between their 1-second slices too
+    // (see ble_do_scan), so no phase of the rotation stalls this for longer than
+    // about a second.
+    gps_poll();
+
+    uint32_t now = millis();
+
+    // Locator mode owns the radio: stream the target's live RSSI as LOC lines.
+    if(g_locate_kind == 'w') {
+        if(now - g_last_loc >= 120) {
+            g_last_loc = now;
+            if(g_locate_best > -127) {
+                Serial.printf("LOC,%d\n", g_locate_best);
+                g_locate_best = -127; // reset window; quiet interval = no LOC (out of range)
+            }
+        }
+        return;
+    }
+    if(g_locate_kind == 'b') {
+        ble_locate_scan(); // ~1 s blocking scan; emits LOC if the target is seen
+        return;
+    }
+
+    // Dual-band: after a WiFi-promiscuous phase, run a BLE scan phase, then
+    // resume. The BLE scan blocks for a few seconds and restores promiscuous.
+    if(g_combo && now - g_phase_start >= COMBO_WIFI_MS) {
+        ble_do_scan(COMBO_BLE_SEC);
+        g_phase_start = millis();
+        return;
+    }
+
+    // When not scanning, stay idle (no channel hopping, no status TX) so the
+    // board isn't "in use" after the app stops/exits.
+    if(!g_scanning) return;
+
+    // Channel hop every 300 ms unless locked.
+    //
+    // 1-13, not 1-11. 12 and 13 are unusable for APs in the US, so the old bound
+    // cost nothing there -- but they are ordinary channels across most of the
+    // rest of the world, and a probe REQUEST is not bound by the same rule
+    // anywhere. The price is ~18% less dwell per channel.
+    //
+    // 14 stays out: it is Japan-only, DSSS-only, and would burn dwell almost
+    // everywhere to cover almost nothing.
+    //
+    // On a 5 GHz-capable radio the sweep also walks the 28 5 GHz channels -- see
+    // the dual-band block near the top. The cursor is an index rather than
+    // "current + 1" because the 5 GHz channel numbers are not contiguous.
+    if(g_lock_channel == 0 && now - g_last_hop >= 300) {
+        g_last_hop = now;
+        uint16_t n = hop_count();
+        g_hop_i = (uint16_t)((g_hop_i + 1) % n);
+        set_channel(hop_channel(g_hop_i));
+    }
+
+    // Status heartbeat ~1 Hz. 4th field = deauth/disassoc frames in the LAST
+    // interval (a rate, not a lifetime total) so the alert clears when a flood
+    // stops. Older parsers ignore the extra field.
+    if(now - g_last_status >= 1000) {
+        g_last_status = now;
+        uint32_t deauth_rate = g_deauths - g_deauths_last;
+        g_deauths_last = g_deauths;
+        Serial.printf("S,%u,%u,%u,%u\n", g_frames, g_hits, g_channel, deauth_rate);
+
+        // Active attack-tool signatures for this interval, then reset the windows.
+        // Snapshot and reset the beacon ring under the lock: note_beacon_bssid()
+        // appends from the WiFi task using g_beacon_ring_n as its write bound, so
+        // zeroing it outside the lock can race a half-finished append.
+        portENTER_CRITICAL(&g_mux);
+        uint32_t beacon_distinct = g_beacon_distinct;
+        g_beacon_distinct = 0;
+        g_beacon_ring_n = 0;
+        portEXIT_CRITICAL(&g_mux);
+
+        if(g_probe_reqs >= PROBE_FLOOD_MIN) Serial.printf("ATK,probeflood,%u\n", g_probe_reqs);
+        if(beacon_distinct >= BEACON_FLOOD_MIN)
+            Serial.printf("ATK,beaconflood,%u\n", beacon_distinct);
+        g_probe_reqs = 0;
+    }
+}

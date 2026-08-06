@@ -1,5 +1,5 @@
 /*
- * Purpose: Draw LCWO, straight trainer, and TX Groups training screens.
+ * Purpose: Draw LCWO, straight key trainer, and TX Groups training screens.
  * Owns: training score lines, answer prompts, and large glyph layouts.
  * Depends on: morse_flipper_app_i.h, trainer state, and prompt font data.
  * Tests: trainer host tests cover data; rendering is hardware-only.
@@ -539,7 +539,8 @@ void morse_flipper_draw_trainer_setup(Canvas* canvas, MorseFlipperApp* app) {
         sizeof(tone_line),
         "%c chars %s",
         app->trainer_row == 3U ? '>' : ' ',
-        app->trainer.custom_set_idx == 0U ? "lesson" : app->trainer.custom_name);
+        morse_flipper_effective_trainer_custom_set_idx(app) == 0U ? "lesson" :
+                                                                    app->trainer.custom_name);
     canvas_draw_str(canvas, 8, 24, trainer_line);
     canvas_draw_str(canvas, 8, 34, trainer_line2);
     canvas_draw_str(canvas, 8, 44, trainer_line3);
@@ -562,7 +563,7 @@ void morse_flipper_draw_straight_screen(Canvas* canvas, MorseFlipperApp* app) {
 
     if(!app->straight_started || morse_flipper_straight_countdown_active(app)) {
         canvas_set_font(canvas, FontPrimary);
-        canvas_draw_str_aligned(canvas, 64, 14, AlignCenter, AlignCenter, "Straight trainer");
+        canvas_draw_str_aligned(canvas, 64, 14, AlignCenter, AlignCenter, "Straight key trainer");
         canvas_set_font(canvas, FontSecondary);
         if(morse_flipper_straight_countdown_active(app)) {
             canvas_draw_str_aligned(canvas, 64, 38, AlignCenter, AlignCenter, "Starting");

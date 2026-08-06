@@ -177,7 +177,14 @@ static CanDriver *can_for_bus(CanBusId bus) {
 
 static bool send_on_bus(CanBusId bus, const CanFrame &frame) {
     CanDriver *driver = can_for_bus(bus);
-    return driver ? driver->send(frame) : false;
+    bool ok = driver ? driver->send(frame) : false;
+    // Single TX chokepoint: every injected/modified frame (0x3EE, 0x3FD, the
+    // 0x370 nag echo, generated + modified wrappers) routes through here. Record
+    // the ones we actually put on the bus as TX so the black-box capture shows
+    // our frames alongside the RX bus — same id filter as RX, cheap ring write,
+    // no-op when the recorder is off. Recording never gates the send.
+    if (ok) blackbox_record_tx(bus, frame, millis());
+    return ok;
 }
 
 static bool send_generated_frame(CanBusId bus, const CanFrame &frame) {
@@ -555,6 +562,13 @@ static void debug_log_nag_decision(CanBusId bus,
 static void apply_detected_hw(TeslaHWVersion hw, const char *reason) {
     if (hw == TeslaHW_Unknown) return;
     state_enter();
+    // Manual HW selection wins (#110): once the owner has pinned a version,
+    // auto-detection must never move it — detection can only guess on taps that
+    // carry no 0x398, and overriding a deliberate choice is what breaks setups.
+    if (g_state.hw_override != TeslaHW_Unknown) {
+        state_exit();
+        return;
+    }
     if (g_state.hw_version == hw) {
         state_exit();
         return;
@@ -1055,9 +1069,13 @@ static void process_frame(CanBusId bus, const CanFrame &frame) {
     bool steer_cfg = (g_state.cfg_steer_id != 0);
     // AP-First stability debounce: stamp the last time AP was not engaged, so
     // fsd_ap_first_allows() can require AP held stable for AP_FIRST_STABLE_MS (#100/#108).
-    if (g_state.das_ap_state < 2u) {
+    // < DAS_APSTATE_ENGAGED (3): AVAILABLE(2) is not engaged, so the stability
+    // window measures time actually held at 3+, and dropping to AVAILABLE re-requires
+    // a centred wheel (a drop to 2 is a disengage).
+    if (g_state.das_ap_state < DAS_APSTATE_ENGAGED) {
         g_state.ap_unstable_tick_ms = millis();
         g_state.soft_engage_latched = false;  // re-require centred wheel next engage (#108)
+        g_state.ap_inject_count = 0;          // re-arm Minimal Inject burst next engage (#108)
     }
     fsd_abort_guard_update(&g_state);  // latch off injection if the car aborts (#108)
     // Black-box event-core poll (#124): once per frame, reading das_ap_state as
@@ -1074,7 +1092,8 @@ static void process_frame(CanBusId bus, const CanFrame &frame) {
     if (frame.id == CAN_ID_BMS_THERMAL)    g_state.seen_bms_thermal++;
     state_exit();
 
-    // Black-box: record every frame (all ids/buses, both modes) and arm a
+    // Black-box: record key diagnostic ids (all buses, both modes; the filter
+    // in blackbox_record keeps the window intact on a busy bus) and arm a
     // capture on an abort transition (#124). Never triggers on a plain
     // disengage — only EVT_ABORT here; bus-off/manual arm from elsewhere.
     blackbox_record(bus, frame, now);
@@ -1281,7 +1300,13 @@ static void process_frame(CanBusId bus, const CanFrame &frame) {
     if (frame.id == CAN_ID_AP_LEGACY && state_snapshot().hw_version == TeslaHW_Legacy) {
         CanFrame f = frame;
         state_enter();
-        bool modified = fsd_handle_legacy_autopilot(&g_state, &f);
+        // Minimal Inject (#108): once this engagement's burst budget is spent, stop
+        // modifying the 0x3EE frame so injection stays at engage onset, off the abort
+        // edge. ap_inject_count counts injected frames and resets to 0 on disengage.
+        bool minimal_ok = !(g_state.ap_first_minimal &&
+                            g_state.ap_inject_count >= AP_MINIMAL_INJECT_FRAMES);
+        bool modified = minimal_ok && fsd_handle_legacy_autopilot(&g_state, &f);
+        if (modified && ap_ok && g_state.ap_first_minimal) g_state.ap_inject_count++;
         state_exit();
         if (modified && tx && ap_ok) send_on_bus(bus, f);
         return;
@@ -1299,6 +1324,12 @@ static void process_frame(CanBusId bus, const CanFrame &frame) {
     // samples so 0x399 can be parsed for AP/NAG gating.
     static uint32_t hw_fallback_3fd_count = 0;
     static uint32_t hw_fallback_399_count = 0;
+    // NOTE (#110/#122): beta.20 upgraded a locked-in HW3 guess to HW4 whenever a
+    // valid 0x39B appeared, to fix HW4 cars whose tap carries no 0x398. That
+    // regressed cars where the HW3 path was already working: switching to the HW4
+    // DAS parser left AP-state unread ("Waiting") and HW4-style injection produced
+    // TX errors. Reverted — detecting HW4 must not change a DAS-read/injection
+    // path that already works. See #110 for the reworked approach.
     if (state_snapshot().hw_version == TeslaHW_Unknown) {
         if (frame.id == CAN_ID_AP_LEGACY) {
             apply_detected_hw(TeslaHW_Legacy, "fallback:0x3EE");
@@ -1350,7 +1381,12 @@ static void process_frame(CanBusId bus, const CanFrame &frame) {
     if (frame.id == CAN_ID_AP_CONTROL) {
         CanFrame f = frame;
         state_enter();
-        bool modified = fsd_handle_autopilot_frame(&g_state, &f);
+        // Minimal Inject (#108): stop modifying 0x3FD once the burst budget is spent
+        // this engagement, keeping injection off the abort edge. Resets on disengage.
+        bool minimal_ok = !(g_state.ap_first_minimal &&
+                            g_state.ap_inject_count >= AP_MINIMAL_INJECT_FRAMES);
+        bool modified = minimal_ok && fsd_handle_autopilot_frame(&g_state, &f);
+        if (modified && ap_ok && g_state.ap_first_minimal) g_state.ap_inject_count++;
         state_exit();
         if (modified && tx && ap_ok) send_on_bus(bus, f);
         return;
@@ -1478,6 +1514,14 @@ void setup() {
     g_state.blackbox_enabled      = BLACKBOX_DEFAULT_ENABLED;  // ON on LittleFS/SD, OFF on volatile RAM (#124)
 
     prefs_load(&g_state);
+    // Apply a saved manual HW selection immediately (#110) so the correct
+    // handlers are live from the first frame, without waiting on detection.
+    if (g_state.hw_override != TeslaHW_Unknown) {
+        fsd_apply_hw_version(&g_state, g_state.hw_override);
+        Serial.printf("[HW] Manual override: %s\n",
+                      (g_state.hw_override == TeslaHW_HW4)    ? "HW4" :
+                      (g_state.hw_override == TeslaHW_HW3)    ? "HW3" : "Legacy");
+    }
 #if defined(BOARD_TTGO_DISPLAY)
     display_set_enabled(g_state.display_enabled);
 #endif

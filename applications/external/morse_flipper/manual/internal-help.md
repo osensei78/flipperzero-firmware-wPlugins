@@ -70,8 +70,8 @@ This is the same help file that lives on the Flipper under Help: a gentle introd
 - Use Farnsworth to open up the gaps. The spacing should help you hear the rhythm, not tempt you back into counting.
 - You need to hear letters, not inventory. If you only copy shapes back as "three dots, one dash", you are practising parroting, not Morse. Doing this will not help you.
 - You can also use this app to sharpen straight key sending and practise five character sending groups competitively. Do not make those the main event too early. Copying characters by ear comes first. If you cannot hear the letters reliably, better sending just makes tidier nonsense.
-- Straight key sending is a skill of its own. The line between a recognisable personal fist and sloppy sending is subtle, and beginners usually cannot hear the difference yet. The Straight trainer grades your marks, gaps and dah/dit ratio. Groups of 5 has Easy, Medium and IARU HST scoring. Use Medium as the first serious target and start at 15 WPM. Drop to Easy if the timing feels impossible, but remember that Easy still permits sending that would sound rough on the air.
-- On the Straight trainer result line: The target ratio is dah/dit = 3. OK means that part was close enough. When you see a number, not OK, it is a percentage score. Higher is better. A low number means that your sending was far from the expected timing. Above 80%, you will only see OK.
+- Straight key sending is a skill of its own. The line between a recognisable personal fist and sloppy sending is subtle, and beginners usually cannot hear the difference yet. The Straight key trainer grades your marks, gaps and dah/dit ratio. Groups of 5 has Easy, Medium and IARU HST scoring. Use Medium as the first serious target and start at 15 WPM. Drop to Easy if the timing feels impossible, but remember that Easy still permits sending that would sound rough on the air.
+- On the Straight key trainer result line: The target ratio is dah/dit = 3. OK means that part was close enough. When you see a number, not OK, it is a percentage score. Higher is better. A low number means that your sending was far from the expected timing. Above 80%, you will only see OK.
   - S → spacing
   - di → dit length
   - da → dah length
@@ -165,7 +165,7 @@ This is the same help file that lives on the Flipper under Help: a gentle introd
 
 ## USB & live practice
 
-- There are sites like https://vail.woozle.org, V-band or iCW let you practise with other people using a real paddle.
+- There are websites like iCW, [vail.woozle.net](http://vail.woozle.net/), [morse.halb.it](https://morse.halb.it/), and VBand that let you practise with other people using a real paddle.
 - To do this, you need a computer adapter for your SK or paddle. This app can emulate an adapter for CW practice sites. You can still use the Flipper's buttons if you must.
 - Most simple adapters lie to the computer and pretend to be a keyboard or mouse. That is how they get a key or paddle in. The fancy word for doing this is emulation.
 - The site reads those key presses, generates audio for your speakers, and sends your keypresses, as Morse, to the other participants.
@@ -182,7 +182,7 @@ This is the same help file that lives on the Flipper under Help: a gentle introd
 - With Break-In on (BKIN on) you transmit and it logs. Handy for POTA or SOTA, where the operator already has enough plates wobbling. Logs are dated on the SD card, and each change is timestamped.
 - Rig keying uses P15 for key and P16 for PTT. Do not wire a radio on optimism. Check the rig input, polarity, and ground arrangement. Use a transistor or optocoupler if the noise or RFI makes Flipper misbehave.
 - Back toggles BKIN. Long press Left exits. With BKIN off, paddle input is logged but not sent to the rig.
-- Assign short messages to Up, Down, Left, Right, and OK. Use them for field exchanges, not essays. If logging is enabled, entries go to /ext/ham/morse- flipper- ham- keyer- YYYY MM DD.txt. You get one file each day.
+- Assign short messages to Up, Down, Left, Right, and OK. Use them for field exchanges, not essays. If logging is enabled, entries go to /ext/apps_data/morse_flipper/morse- flipper- ham- keyer- YYYY MM DD.txt. You get one file each day.
 
 ## Troubleshooting
 
@@ -193,7 +193,7 @@ This is the same help file that lives on the Flipper under Help: a gentle introd
   - P7 → dit or SK
 - The paddles can be swapped from settings, if needed. When Back is not exiting, it is being used as a paddle. You will see this symbol on the right: ⏴ This is your reminder to long press Left for back.
 - A GPIO short warning means the jack wiring looks wrong for the chosen input. Unplug the key and check it. A mono straight key in the paddle jack will be treated as a straight key.
-- For USB output, choose Keyboard, Mouse, or MIDI, then wait a bit for the computer to reconnect with the new settings. Custom character sets and ham logs live on the SD card under /ext/ham.
+- For USB output, choose Keyboard, Mouse, or MIDI, then wait a bit for the computer to reconnect with the new settings. Custom character sets and ham logs live on the SD card under /ext/apps_data/morse_flipper.
 - High quality audio is output only on P2. Connect it to an audio jack. It will sound better if you can add a small filtering capacitor, 1-50µF, between P2 and ⏚ ground. You don't have to use the P2 output; you can always fall back to the internal buzzer for the sidetone.
 
 ## Moving forward

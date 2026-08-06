@@ -14,6 +14,7 @@
 
 #define MORSE_TRAINER_CUSTOM_SET_CAP  8U
 #define MORSE_TRAINER_CUSTOM_NAME_CAP 24U
+#define MORSE_TRAINER_CUSTOM_TEXT_CAP 512U
 
 typedef struct {
     char name[MORSE_TRAINER_CUSTOM_NAME_CAP];
@@ -26,4 +27,6 @@ typedef struct {
 } MorseTrainerCustomSets;
 
 const char* morse_trainer_custom_chars_path(void);
+void morse_trainer_ensure_custom_chars_file(void);
 bool morse_trainer_load_custom_sets(MorseTrainerCustomSets* sets);
+bool morse_trainer_try_load_custom_sets(MorseTrainerCustomSets* sets);

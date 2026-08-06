@@ -3,6 +3,7 @@
 #include "assets_icons.h"
 #include "subghz/types.h"
 #include <furi.h>
+#include <furi/core/memmgr_heap.h>
 #include <notification/notification.h>
 #include <notification/notification_messages.h>
 #include <flipper_format/flipper_format.h>
@@ -32,6 +33,19 @@ bool subghz_tx_start(SubGhz* subghz, FlipperFormat* flipper_format) {
         SubGhzTx can_tx = subghz_txrx_radio_device_check_tx(subghz->txrx, frequency);
         subghz_dialog_message_freq_error(subghz, can_tx);
         break;
+
+    case SubGhzTxRxStartTxStateErrorMemory: {
+        FuriString* msg = furi_string_alloc();
+        furi_string_printf(
+            msg,
+            "Not enough memory\nFree %u B, block %u B\nNeed %u B",
+            (unsigned)memmgr_get_free_heap(),
+            (unsigned)memmgr_heap_get_max_free_block(),
+            (unsigned)subghz_txrx_get_tx_min_heap_required(subghz->txrx));
+        dialog_message_show_storage_error(subghz->dialogs, furi_string_get_cstr(msg));
+        furi_string_free(msg);
+        break;
+    }
 
     default:
         return true;
@@ -360,12 +374,32 @@ bool subghz_save_protocol_to_file(
 void subghz_save_to_file(void* context) {
     furi_assert(context);
     SubGhz* subghz = context;
-    if(subghz_path_is_file(subghz->file_path)) {
-        subghz_save_protocol_to_file(
-            subghz,
-            subghz_txrx_get_fff_data(subghz->txrx),
-            furi_string_get_cstr(subghz->file_path));
+
+    if(!subghz_path_is_file(subghz->file_path)) {
+        return;
     }
+
+    FlipperFormat* fff_data = subghz_txrx_get_fff_data(subghz->txrx);
+
+    //Guard against corrupting RAW files
+    //This callback runs after transmitting a dynamic protocol to persist the
+    //updated rolling counter back into its source file. But file_path and
+    //fff_data can be stale relative to what was actually transmitted: e.g.
+    //sending a received signal from the Info screen leaves file_path pointing
+    //at a previously opened RAW file while fff_data still holds only the RAW
+    //header (Protocol/File_name/Radio_device_name). Writing that buffer would
+    //delete the RAW_Data and destroy the file. RAW samples are streamed from
+    //disk and are never persisted through this path, so never save RAW here.
+    FuriString* protocol = furi_string_alloc();
+    bool is_raw = flipper_format_rewind(fff_data) &&
+                  flipper_format_read_string(fff_data, "Protocol", protocol) &&
+                  furi_string_equal(protocol, "RAW");
+    furi_string_free(protocol);
+    if(is_raw) {
+        return;
+    }
+
+    subghz_save_protocol_to_file(subghz, fff_data, furi_string_get_cstr(subghz->file_path));
 }
 
 bool subghz_load_protocol_from_file(SubGhz* subghz) {

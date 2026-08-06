@@ -22,6 +22,11 @@ typedef enum {
 
 typedef struct FSDState {
     TeslaHWVersion hw_version;
+    // Manual HW selection (#110). TeslaHW_Unknown = auto-detect (default); any
+    // other value pins hw_version and makes auto-detection a no-op. For taps that
+    // carry no 0x398 (many Model 3 / Model Y) detection can only guess, so let an
+    // owner who knows their car say so instead of guessing harder.
+    TeslaHWVersion hw_override;
     int speed_profile;
     int speed_offset;
     bool fsd_enabled;
@@ -78,9 +83,19 @@ typedef struct FSDState {
 
     // --- AP-first mode (2026.14.x compatibility) ---
     bool ap_first; // delay 0x3FD/0x3EE injection until AP is engaged AND stable
-    uint8_t das_ap_state; // DAS_autopilotState: 0=UNAVAIL 1=AVAIL 2=ACTIVE_NOMINAL 3+=active
+    bool ap_first_edge; // experimental "Instant Engage": inject as soon as AP is
+        // engaged, skipping the AP_FIRST_STABLE_MS debounce. Off by default.
+    bool ap_first_minimal; // experimental "Minimal Inject": limit the AP-enable frame
+        // injection to a brief burst at engage, then stop until the
+        // car disengages — keeps injection off the abort edge (#108). Off by default.
+    uint8_t
+        ap_inject_count; // AP-enable frames modified this engagement (Minimal Inject burst budget;
+    // reset to 0 on disengage, das_ap_state < DAS_APSTATE_ENGAGED)
+    uint8_t das_ap_state; // DAS_autopilotState: 0=UNAVAIL 1=UNAVAILABLE/AVAIL-flicker
+        // 2=AVAILABLE (offered, NOT engaged) 3=ACTIVE_NOMINAL (first
+        // engaged) 6=active 8/9=aborting/aborted
     uint32_t
-        ap_unstable_tick_ms; // ms clock when das_ap_state was last < 2 (AP-first stability debounce)
+        ap_unstable_tick_ms; // ms clock when das_ap_state was last < DAS_APSTATE_ENGAGED (AP-first stability debounce)
 
     // --- Shared event-core bookkeeping (#123, fsd_events.h) ---
     // Per-instance state for fsd_events_poll() / fsd_events_inject(): detects
@@ -110,7 +125,7 @@ typedef struct FSDState {
     // dunckencn's logs: injected 0x3EE is byte-identical in jerk vs clean runs;
     // only the jerk runs reach the abort states. When on, cut all activation
     // injection the instant the car enters an abort state and latch off until a
-    // clean disengage (das_ap_state < 2), so we never feed/repeat an in-progress
+    // clean disengage (das_ap_state < DAS_APSTATE_ENGAGED), so we never feed/repeat an in-progress
     // abort. Off by default; experimental, needs on-car validation.
     bool abort_guard; // opt-in toggle
     bool abort_guard_latched; // true once an abort was seen this engagement

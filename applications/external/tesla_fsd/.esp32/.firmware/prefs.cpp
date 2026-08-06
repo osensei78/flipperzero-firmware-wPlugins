@@ -15,6 +15,8 @@ void prefs_load(FSDState *state) {
     state->nag_killer               = g_prefs.getBool("nag",    true);
     state->continuous_ap            = g_prefs.getBool("contap", false);
     state->ap_first                 = g_prefs.getBool("apfirst",false);
+    state->ap_first_edge            = g_prefs.getBool("apfe",   false);
+    state->ap_first_minimal         = g_prefs.getBool("apmi",   false);
     state->nag_epas_faithful        = g_prefs.getBool("nagf",   false);
     state->soft_engage              = g_prefs.getBool("soft",   false);
     state->nag_burst                = g_prefs.getBool("nagb",   false);
@@ -45,6 +47,8 @@ void prefs_load(FSDState *state) {
     if (g_prefs.isKey("stap")) g_prefs.getString("stap").toCharArray(state->wifi_sta_pass, sizeof(state->wifi_sta_pass));
 
     state->op_mode = (OpMode)g_prefs.getUChar("mode", (uint8_t)OpMode_ListenOnly);
+    // Manual HW selection (#110); TeslaHW_Unknown = auto-detect.
+    state->hw_override = (TeslaHWVersion)g_prefs.getUChar("hwov", (uint8_t)TeslaHW_Unknown);
 
     // Configurable nag-context signal mapping (#122)
     state->cfg_das_id        = g_prefs.getUShort("cdid",  0);
@@ -79,6 +83,8 @@ void prefs_save(const FSDState *state) {
     g_prefs.putBool("nag",    state->nag_killer);
     g_prefs.putBool("contap", state->continuous_ap);
     g_prefs.putBool("apfirst",state->ap_first);
+    g_prefs.putBool("apfe",   state->ap_first_edge);
+    g_prefs.putBool("apmi",   state->ap_first_minimal);
     g_prefs.putBool("nagf",   state->nag_epas_faithful);
     g_prefs.putBool("soft",   state->soft_engage);
     g_prefs.putBool("nagb",   state->nag_burst);
@@ -109,6 +115,7 @@ void prefs_save(const FSDState *state) {
     g_prefs.putString("stap", state->wifi_sta_pass);
 
     g_prefs.putUChar("mode",  (uint8_t)state->op_mode);
+    g_prefs.putUChar("hwov",  (uint8_t)state->hw_override);   // manual HW selection (#110)
 
     // Configurable nag-context signal mapping (#122)
     g_prefs.putUShort("cdid", state->cfg_das_id);
